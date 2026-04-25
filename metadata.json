@@ -1,0 +1,6 @@
+{
+  "name": "Groq Coding Agent",
+  "description": "An OpenHands-style autonomous coding agent powered by Groq llama-3.3-70b-versatile. Features a terminal, file explorer, code editor, and real-time tool execution.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["coding_agent", "terminal", "file_explorer", "code_editor"]
+}
