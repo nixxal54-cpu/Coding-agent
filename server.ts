@@ -1,3 +1,4 @@
+--- START OF FILE Coding-agent-main/server.ts ---
 import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
@@ -40,7 +41,7 @@ async function saveConversations(data: any) {
 }
 let conversationsDB: Record<string, any> = await loadConversations();
 
-// --- Groq Models (all available) ---
+// --- Groq Models ---
 const GROQ_MODELS = [
   { id: "llama-3.3-70b-versatile", name: "Llama 3.3 70B", description: "Most capable, best for complex tasks", recommended: true },
   { id: "llama-3.1-8b-instant", name: "Llama 3.1 8B Instant", description: "Ultra-fast, great for quick tasks", fast: true },
@@ -135,21 +136,26 @@ const TOOLS: any[] = [
   { type: "function", function: { name: "web_search", description: "Search the web for docs, solutions, packages", parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } } },
 ];
 
-const SYSTEM_PROMPT = `You are APEX, an elite AI coding agent. You write production-quality code, debug issues autonomously, and build complete applications.
+const SYSTEM_PROMPT = `You are APEX, an elite AI coding platform with multi-agent capabilities (Architect, Coder, Security, Reviewer). You have MCP-level secure sandbox access to files, terminal, and the web.
 
-## Capabilities
-- Read, write, edit files with surgical precision
-- Run terminal commands, install packages, manage deps
-- Debug and fix errors automatically
-- Search the web for docs and solutions
-- Build any app: React, Next.js, Python, Node, Go, etc.
+CRITICAL RULES:
+1. NORMAL CONVERSATION: If the user is just saying hello, asking a question, or discussing concepts, DO NOT use file creation or execution tools. Simply reply with text.
+2. CODING: ONLY write code or modify files when explicitly requested to build, write, or fix something.
+3. PEV WORKFLOW (Plan -> Execute -> Verify): When tasked with coding, you MUST self-organize using the following XML tags so the frontend can render Generative UI components:
 
-## Rules
-1. Think step by step, then act decisively
-2. Always verify your work by running the code
-3. Handle errors automatically — debug and retry
-4. Write clean, typed, production-ready code
-5. Be concise in explanations, verbose in code quality`;
+<plan>
+List the step-by-step architectural plan before writing any code.
+</plan>
+
+<execute>
+Explain the files you are creating or the commands you are running.
+</execute>
+
+<verify>
+State how you will test or verify the code works (e.g., checking terminal output, linting, or asking the user to review).
+</verify>
+
+Write clean, typed, production-ready code. Think step by step, and self-correct if a terminal command or file read fails.`;
 
 async function executeTool(name: string, args: any, workspace: string): Promise<string> {
   switch (name) {
@@ -376,3 +382,4 @@ if (process.env.NODE_ENV !== "production") {
 }
 
 httpServer.listen(PORT, "0.0.0.0", () => console.log(`\n🚀 APEX Agent → http://localhost:${PORT}\n`));
+--- END OF FILE Coding-agent-main/server.ts ---
