@@ -6,10 +6,34 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>APEX Coding Platform</title>
     
-    <!-- Load Premium Fonts Safely -->
+    <!-- Load Premium Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+    
+    <!-- Define CSS Variables here to bypass Tailwind v4 parser crashes -->
+    <style>
+      :root {
+        --color-bg: #09090b;
+        --color-surface: #18181b;
+        --color-surface2: #27272a;
+        --color-surface3: #3f3f46;
+        --color-border: #27272a;
+        --color-border2: #3f3f46;
+        --color-text: #fafafa;
+        --color-muted: #a1a1aa;
+        --color-faint: #52525b;
+        --color-cyan: #38bdf8;
+        --color-cyan2: #e4e4e7;
+        --color-green: #4ade80;
+        --color-red: #f87171;
+        --color-yellow: #fbbf24;
+        --color-purple: #c084fc;
+        --color-blue: #3b82f6;
+        --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+        --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>
