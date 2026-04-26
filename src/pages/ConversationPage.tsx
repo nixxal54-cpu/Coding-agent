@@ -1,18 +1,12 @@
 import React from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { 
-  Terminal as TerminalIcon, 
-  FileCode, 
-  Layout, 
-  Globe,
-  Maximize2,
-  Minimize2
-} from "lucide-react";
+import { Terminal as TerminalIcon, FileCode, FolderOpen, Globe, Maximize2, Minimize2, MoreHorizontal, Pencil, ChevronLeft, Cpu } from "lucide-react";
 import { useConversationStore } from "@/src/stores/conversation-store";
 import { useEventStore } from "@/src/stores/event-store";
 import { useAgentStore } from "@/src/stores/agent-store";
+import { useSettingsStore } from "@/src/stores/settings-store";
 import { getSocket, joinConversation, sendAgentMessage } from "@/src/socket/socket";
-import { getConversation } from "@/src/api/conversations";
+import { getConversation, updateConversation, getModels } from "@/src/api/conversations";
 import { cn } from "@/src/lib/utils";
 import ChatInterface from "@/src/components/chat/ChatInterface";
 import Terminal from "@/src/components/terminal/Terminal";
@@ -24,35 +18,34 @@ type Tab = "terminal" | "files" | "editor" | "browser";
 export default function ConversationPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { setActiveConversationId } = useConversationStore();
+  const { setActiveConversationId, updateConversation: updateStore } = useConversationStore();
   const { addMessage, appendToken, finalizeMessage, addToolEvent, clearAll } = useEventStore();
   const { setStatus } = useAgentStore();
-  
+  const { selectedModel } = useSettingsStore();
   const [activeTab, setActiveTab] = React.useState<Tab>("terminal");
   const [selectedFilePath, setSelectedFilePath] = React.useState<string | null>(null);
-  const [chatWidth, setChatWidth] = React.useState(400); // px
+  const [chatWidth, setChatWidth] = React.useState(380);
+  const [panelMaximized, setPanelMaximized] = React.useState(false);
+  const [editingTitle, setEditingTitle] = React.useState(false);
+  const [title, setTitle] = React.useState("");
+  const [models, setModels] = React.useState<any[]>([]);
+  const [convModel, setConvModel] = React.useState(selectedModel);
+  const titleRef = React.useRef<HTMLInputElement>(null);
 
   React.useEffect(() => {
     if (!id) return;
     setActiveConversationId(id);
     clearAll();
-    
-    // Join socket room
     joinConversation(id);
-    
-    // Load existing messages
+    getModels().then(setModels);
     getConversation(id).then((data) => {
-        data.messages.forEach((msg: any) => addMessage(msg));
+      data.messages?.forEach((msg: any) => addMessage(msg));
+      setTitle(data.title || "New Conversation");
+      setConvModel(data.model || selectedModel);
     });
-
-    // Handle initial message from session storage
     const initialMsg = sessionStorage.getItem(`initial_msg_${id}`);
-    if (initialMsg) {
-        sendAgentMessage(id, initialMsg);
-        sessionStorage.removeItem(`initial_msg_${id}`);
-    }
+    if (initialMsg) { sendAgentMessage(id, initialMsg, selectedModel); sessionStorage.removeItem(`initial_msg_${id}`); }
 
-    // Socket listeners
     const socket = getSocket();
     socket.on("agent_status", ({ status }) => setStatus(status));
     socket.on("message_start", (msg) => addMessage({ ...msg, content: "", isStreaming: true }));
@@ -60,18 +53,22 @@ export default function ConversationPage() {
     socket.on("message_done", ({ id: msgId }) => finalizeMessage(msgId));
     socket.on("tool_use", (event) => addToolEvent({ type: "tool_use", ...event }));
     socket.on("tool_result", (event) => addToolEvent({ type: "tool_result", ...event }));
-    socket.on("error", ({ message }) => console.error(message));
-
     return () => {
-      socket.off("agent_status");
-      socket.off("message_start");
-      socket.off("message_token");
-      socket.off("message_done");
-      socket.off("tool_use");
-      socket.off("tool_result");
-      socket.off("error");
+      ["agent_status", "message_start", "message_token", "message_done", "tool_use", "tool_result"].forEach((e) => socket.off(e));
     };
   }, [id]);
+
+  const saveTitle = async () => {
+    setEditingTitle(false);
+    if (!id || !title.trim()) return;
+    await updateConversation(id, { title });
+    updateStore(id, { title });
+  };
+
+  const changeModel = async (model: string) => {
+    setConvModel(model);
+    if (id) await updateConversation(id, { model });
+  };
 
   const handleFileSelect = (path: string) => {
     setSelectedFilePath(path);
@@ -80,106 +77,107 @@ export default function ConversationPage() {
 
   if (!id) return null;
 
+  const TABS: { id: Tab; label: string; icon: any }[] = [
+    { id: "terminal", label: "Terminal", icon: TerminalIcon },
+    { id: "files", label: "Files", icon: FolderOpen },
+    { id: "editor", label: "Editor", icon: FileCode },
+    { id: "browser", label: "Preview", icon: Globe },
+  ];
+
   return (
-    <div className="flex h-full w-full overflow-hidden">
-      {/* Center Panel (Chat) */}
-      <div 
-        style={{ width: chatWidth }}
-        className="h-full flex-shrink-0"
-      >
-        <ChatInterface conversationId={id} />
-      </div>
+    <div className="flex h-full overflow-hidden">
+      {/* Chat Panel */}
+      {!panelMaximized && (
+        <div style={{ width: chatWidth, minWidth: 280, maxWidth: 600 }} className="flex-shrink-0 h-full">
+          <ChatInterface conversationId={id} />
+        </div>
+      )}
 
       {/* Resize Handle */}
-      <div 
-        className="w-1 hover:w-1.5 bg-border hover:bg-accent cursor-col-resize transition-all shrink-0 z-20"
-        onMouseDown={(e) => {
-            const startX = e.clientX;
-            const startWidth = chatWidth;
-            const move = (moveE: MouseEvent) => {
-                const newWidth = startWidth + (moveE.clientX - startX);
-                if (newWidth > 300 && newWidth < 800) setChatWidth(newWidth);
-            };
-            const up = () => {
-                window.removeEventListener("mousemove", move);
-                window.removeEventListener("mouseup", up);
-            };
+      {!panelMaximized && (
+        <div
+          className="w-1 hover:w-1.5 cursor-col-resize transition-all flex-shrink-0 z-20"
+          style={{ background: "var(--color-border)" }}
+          onMouseDown={(e) => {
+            const startX = e.clientX; const startW = chatWidth;
+            const move = (ev: MouseEvent) => { const nw = startW + ev.clientX - startX; if (nw > 280 && nw < 700) setChatWidth(nw); };
+            const up = () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
             window.addEventListener("mousemove", move);
             window.addEventListener("mouseup", up);
-        }}
-      />
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.background = "var(--color-cyan2)")}
+          onMouseLeave={(e) => (e.currentTarget.style.background = "var(--color-border)")}
+        />
+      )}
 
-      {/* Right Panel (Tools) */}
-      <div className="flex-1 h-full flex flex-col bg-bg-secondary overflow-hidden">
-        {/* Tabs */}
-        <div className="h-12 border-b border-border flex items-center px-4 justify-between flex-shrink-0">
-          <div className="flex items-center gap-1">
-             <TabButton 
-                active={activeTab === "terminal"} 
-                onClick={() => setActiveTab("terminal")}
-                icon={<TerminalIcon size={14} />}
-                label="Terminal"
-             />
-             <TabButton 
-                active={activeTab === "files"} 
-                onClick={() => setActiveTab("files")}
-                icon={<Layout size={14} />}
-                label="Files"
-             />
-             <TabButton 
-                active={activeTab === "editor"} 
-                onClick={() => setActiveTab("editor")}
-                icon={<FileCode size={14} />}
-                label="Editor"
-             />
-             <TabButton 
-                active={activeTab === "browser"} 
-                onClick={() => setActiveTab("browser")}
-                icon={<Globe size={14} />}
-                label="Browser"
-             />
+      {/* Right Panel */}
+      <div className="flex-1 h-full flex flex-col overflow-hidden" style={{ background: "var(--color-bg)" }}>
+        {/* Top Bar */}
+        <div className="h-12 border-b flex items-center px-4 gap-3 flex-shrink-0" style={{ borderColor: "var(--color-border)", background: "var(--color-surface)" }}>
+          {panelMaximized && (
+            <button onClick={() => setPanelMaximized(false)} className="p-1.5 rounded" style={{ color: "var(--color-muted)" }}>
+              <ChevronLeft size={16} />
+            </button>
+          )}
+
+          {/* Tabs */}
+          <div className="flex items-center gap-1 flex-1">
+            {TABS.map((tab) => {
+              const Icon = tab.icon;
+              return (
+                <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
+                  style={{
+                    background: activeTab === tab.id ? "var(--color-surface3)" : "transparent",
+                    color: activeTab === tab.id ? "white" : "var(--color-muted)",
+                    border: activeTab === tab.id ? "1px solid var(--color-border2)" : "1px solid transparent",
+                  }}>
+                  <Icon size={13} />
+                  {tab.label}
+                </button>
+              );
+            })}
           </div>
-          <button className="text-text-muted hover:text-text-primary p-2">
-            <Maximize2 size={16} />
+
+          {/* Title editor */}
+          <div className="flex items-center gap-2">
+            {editingTitle ? (
+              <input ref={titleRef} value={title} onChange={(e) => setTitle(e.target.value)}
+                onBlur={saveTitle} onKeyDown={(e) => { if (e.key === "Enter") saveTitle(); if (e.key === "Escape") setEditingTitle(false); }}
+                className="text-xs px-2 py-1 rounded outline-none" autoFocus
+                style={{ background: "var(--color-surface2)", border: "1px solid var(--color-cyan2)", color: "var(--color-text)", width: 200 }} />
+            ) : (
+              <button onClick={() => setEditingTitle(true)} className="flex items-center gap-1.5 text-xs px-2 py-1 rounded transition-colors" style={{ color: "var(--color-muted)" }}>
+                <span className="truncate max-w-32">{title}</span>
+                <Pencil size={10} />
+              </button>
+            )}
+          </div>
+
+          {/* Model selector */}
+          <select value={convModel} onChange={(e) => changeModel(e.target.value)}
+            className="text-xs px-2 py-1 rounded-lg outline-none"
+            style={{ background: "var(--color-surface2)", border: "1px solid var(--color-border)", color: "var(--color-muted)", fontFamily: "var(--font-mono)" }}>
+            {models.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+          </select>
+
+          <button onClick={() => setPanelMaximized(!panelMaximized)} className="p-1.5 rounded transition-colors" style={{ color: "var(--color-muted)" }}>
+            {panelMaximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
           </button>
         </div>
 
         {/* Tab Content */}
-        <div className="flex-1 relative overflow-hidden">
-          <div className={cn("absolute inset-0", activeTab !== "terminal" && "hidden")}>
-            <Terminal conversationId={id} />
-          </div>
-          <div className={cn("absolute inset-0", activeTab !== "files" && "hidden")}>
-            <FileExplorer conversationId={id} onFileSelect={handleFileSelect} activePath={selectedFilePath || undefined} />
-          </div>
-          <div className={cn("absolute inset-0", activeTab !== "editor" && "hidden")}>
-            <CodeEditor conversationId={id} filePath={selectedFilePath} />
-          </div>
-          <div className={cn("absolute inset-0", activeTab !== "browser" && "hidden")}>
-            <div className="h-full flex flex-col items-center justify-center text-text-muted opacity-30 gap-4">
-              <Globe size={64} strokeWidth={1} />
-              <p className="text-sm font-mono tracking-widest uppercase">No browser activity yet</p>
-            </div>
+        <div className="flex-1 overflow-hidden relative">
+          <div className={cn("absolute inset-0", activeTab !== "terminal" && "hidden")}><Terminal conversationId={id} /></div>
+          <div className={cn("absolute inset-0", activeTab !== "files" && "hidden")}><FileExplorer conversationId={id} onFileSelect={handleFileSelect} activePath={selectedFilePath} /></div>
+          <div className={cn("absolute inset-0", activeTab !== "editor" && "hidden")}><CodeEditor conversationId={id} filePath={selectedFilePath} /></div>
+          <div className={cn("absolute inset-0 flex flex-col items-center justify-center gap-4", activeTab !== "browser" && "hidden")} style={{ background: "var(--color-bg)" }}>
+            <Globe size={48} style={{ color: "var(--color-faint)" }} />
+            <p className="text-sm font-mono" style={{ color: "var(--color-faint)" }}>No preview available</p>
+            <p className="text-xs" style={{ color: "var(--color-faint)" }}>Run a dev server and it will appear here</p>
           </div>
         </div>
       </div>
     </div>
-  );
-}
-
-function TabButton({ active, onClick, icon, label }: { active: boolean, onClick: () => void, icon: React.ReactNode, label: string }) {
-  return (
-    <button
-      onClick={onClick}
-      className={cn(
-        "flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-medium transition-all",
-        active 
-          ? "bg-bg-tertiary text-text-primary border border-border" 
-          : "text-text-muted hover:text-text-secondary hover:bg-bg-tertiary/50"
-      )}
-    >
-      {icon}
-      {label}
-    </button>
   );
 }
