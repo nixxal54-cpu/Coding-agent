@@ -12,4 +12,3 @@ export const deleteFile = (id: string, path: string) => axios.delete(`/api/conve
 export const getSkills = () => axios.get("/api/skills").then((r) => r.data);
 export const getModels = () => axios.get("/api/models").then((r) => r.data);
 export const getSettings = () => axios.get("/api/settings").then((r) => r.data);
-export const saveApiKeys = (data: any) => axios.post("/api/settings/keys", data).then((r) => r.data);
