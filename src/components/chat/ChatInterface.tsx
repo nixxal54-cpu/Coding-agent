@@ -1,13 +1,13 @@
 import React from "react";
 import {
   Send, Square, Bot, User, ChevronDown, ChevronRight,
-  CheckCircle2, Terminal as TerminalIcon, FileText, Search,
-  Globe, FolderOpen, Pencil, Trash2, Move, ChevronUp, Zap,
+  Terminal as TerminalIcon, FileText, Search,
+  Globe, FolderOpen, Pencil, Trash2, Move, ChevronUp, Zap, CheckCircle2,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
-import { useEventStore, AgentMessage } from "@/src/stores/event-store";
+import { useEventStore } from "@/src/stores/event-store";
 import { useAgentStore } from "@/src/stores/agent-store";
 import { sendAgentMessage } from "@/src/socket/socket";
 import { cn } from "@/src/lib/utils";
@@ -29,7 +29,7 @@ const TOOL_COLORS: Record<string, string> = {
 
 export default function ChatInterface({ conversationId }: { conversationId: string }) {
   const [input, setInput] = React.useState("");
-  const { messages, toolEvents } = useEventStore();
+  const { messages, toolEvents, addMessage } = useEventStore();
   const { status, reset } = useAgentStore();
   const { selectedModel, setSelectedModel } = useSettingsStore();
   const scrollRef = React.useRef<HTMLDivElement>(null);
@@ -37,15 +37,14 @@ export default function ChatInterface({ conversationId }: { conversationId: stri
   const [atBottom, setAtBottom] = React.useState(true);
   const [modelPickerOpen, setModelPickerOpen] = React.useState(false);
   const [models, setModels] = React.useState<any[]>([]);
-  const modelPickerRef = React.useRef<HTMLDivElement>(null);
+  const pickerRef = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => { reset(); }, [conversationId]);
   React.useEffect(() => { getModels().then(setModels); }, []);
 
-  // Close picker on outside click
   React.useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (modelPickerRef.current && !modelPickerRef.current.contains(e.target as Node)) {
+      if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) {
         setModelPickerOpen(false);
       }
     };
@@ -65,87 +64,119 @@ export default function ChatInterface({ conversationId }: { conversationId: stri
     setAtBottom(scrollHeight - scrollTop - clientHeight < 60);
   };
 
-  const send = React.useCallback(() => {
+  const send = () => {
     const text = input.trim();
     if (!text || status === "running") return;
+
+    // Immediately add user message to the store so it appears in chat
+    const userMsg = {
+      id: `user-${Date.now()}`,
+      role: "user" as const,
+      content: text,
+      timestamp: new Date().toISOString(),
+    };
+    addMessage(userMsg);
+
     sendAgentMessage(conversationId, text, selectedModel);
     setInput("");
-    if (textRef.current) textRef.current.style.height = "auto";
-  }, [input, status, conversationId, selectedModel]);
+    if (textRef.current) {
+      textRef.current.style.height = "auto";
+    }
+  };
 
   const handleKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      send();
+    }
   };
 
   const isRunning = status === "running";
   const hasInput = input.trim().length > 0;
   const currentModel = models.find((m) => m.id === selectedModel);
-  const displayModelName = currentModel?.name ?? selectedModel.split("-").slice(0, 3).join(" ");
+  const displayName = currentModel?.name ?? selectedModel;
+
+  // Merge messages and tool events into a single timeline sorted by timestamp
+  const allItems = React.useMemo(() => {
+    const msgs = messages.map((m) => ({ ...m, _type: "message" as const }));
+    const tools = toolEvents.map((t) => ({ ...t, id: `${t.tool}-${t.timestamp}`, role: "tool" as const, content: t.result || JSON.stringify(t.args), _type: "tool" as const }));
+    return [...msgs, ...tools].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  }, [messages, toolEvents]);
 
   return (
-    <div className="flex flex-col h-full relative" style={{ background: "var(--color-bg)" }}>
+    <div className="flex flex-col h-full" style={{ background: "var(--color-bg)" }}>
       {/* Header */}
-      <div className="h-12 flex items-center px-4 gap-3 border-b z-10"
+      <div className="h-12 flex items-center px-4 gap-3 border-b flex-shrink-0"
         style={{ borderColor: "var(--color-border)", background: "var(--color-surface)" }}>
         <div className={cn("w-2 h-2 rounded-full flex-shrink-0 transition-all",
           isRunning ? "bg-green-400 animate-pulse" : "bg-gray-600")} />
         <span className="text-sm font-semibold">Agent Chat</span>
-        <div className="ml-auto flex items-center gap-2">
-          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-mono"
-            style={{ background: "var(--color-surface2)", color: "var(--color-cyan)", border: "1px solid var(--color-border)" }}>
-            <Zap size={10} />
-            Groq
-          </div>
+        <div className="ml-auto flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-mono"
+          style={{ background: "var(--color-surface2)", color: "var(--color-cyan)", border: "1px solid var(--color-border)" }}>
+          <Zap size={10} />
+          Groq
         </div>
       </div>
 
       {/* Messages */}
       <div ref={scrollRef} onScroll={handleScroll}
-        className="flex-1 overflow-y-auto px-4 py-5 flex flex-col gap-5">
-        {messages.length === 0 ? (
+        className="flex-1 overflow-y-auto px-4 py-5 flex flex-col gap-4">
+        {allItems.length === 0 ? (
           <div className="flex-1 flex flex-col items-center justify-center gap-3 opacity-40 py-20">
             <Bot size={36} />
             <p className="text-sm">Describe your project to start.</p>
           </div>
         ) : (
-          messages.map((msg) => <MessageItem key={msg.id} msg={msg} />)
+          allItems.map((item) =>
+            item._type === "tool"
+              ? <ToolItem key={item.id} event={item as any} />
+              : <MessageItem key={item.id} msg={item as any} />
+          )
         )}
       </div>
 
-      {/* Input Area */}
-      <div className="relative z-50 border-t p-3"
+      {/* Input area */}
+      <div className="flex-shrink-0 border-t p-3 relative"
         style={{ borderColor: "var(--color-border)", background: "var(--color-surface)" }}>
 
-        {/* Model Picker Popup */}
+        {/* Model picker popup — opens upward */}
         <AnimatePresence>
           {modelPickerOpen && (
             <motion.div
-              ref={modelPickerRef}
-              initial={{ opacity: 0, y: 8, scale: 0.97 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: 8, scale: 0.97 }}
-              transition={{ duration: 0.15 }}
-              className="absolute bottom-full left-3 right-3 mb-2 rounded-2xl overflow-hidden z-50"
-              style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", boxShadow: "0 -8px 32px rgba(0,0,0,0.4)" }}
+              ref={pickerRef}
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 6 }}
+              transition={{ duration: 0.13 }}
+              className="absolute left-3 right-3 bottom-full mb-2 rounded-2xl overflow-hidden z-50"
+              style={{
+                background: "var(--color-surface)",
+                border: "1px solid var(--color-border)",
+                boxShadow: "0 -8px 40px rgba(0,0,0,0.5)",
+              }}
             >
-              <div className="px-4 py-3 border-b" style={{ borderColor: "var(--color-border)" }}>
+              <div className="px-4 py-2.5 border-b" style={{ borderColor: "var(--color-border)" }}>
                 <p className="text-xs font-semibold uppercase tracking-widest" style={{ color: "var(--color-muted)" }}>
-                  Select Model · Groq
+                  Groq Models
                 </p>
               </div>
-              <div className="p-2 max-h-72 overflow-y-auto">
+              <div className="p-2 overflow-y-auto" style={{ maxHeight: 260 }}>
                 {models.map((m) => (
                   <button
                     key={m.id}
-                    onPointerDown={(e) => { e.preventDefault(); setSelectedModel(m.id); setModelPickerOpen(false); }}
-                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-all"
+                    onPointerDown={(e) => {
+                      e.preventDefault();
+                      setSelectedModel(m.id);
+                      setModelPickerOpen(false);
+                    }}
+                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left"
                     style={{
                       background: selectedModel === m.id ? "rgba(14,165,233,0.1)" : "transparent",
-                      border: `1px solid ${selectedModel === m.id ? "var(--color-cyan2)" : "transparent"}`,
+                      border: `1px solid ${selectedModel === m.id ? "rgba(14,165,233,0.4)" : "transparent"}`,
                     }}
                   >
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-sm font-medium" style={{ color: selectedModel === m.id ? "white" : "var(--color-text)" }}>
                           {m.name}
                         </span>
@@ -162,9 +193,7 @@ export default function ChatInterface({ conversationId }: { conversationId: stri
                         <p className="text-xs mt-0.5" style={{ color: "var(--color-muted)" }}>{m.description}</p>
                       )}
                     </div>
-                    {selectedModel === m.id && (
-                      <CheckCircle2 size={14} style={{ color: "var(--color-cyan)", flexShrink: 0 }} />
-                    )}
+                    {selectedModel === m.id && <CheckCircle2 size={14} style={{ color: "var(--color-cyan)", flexShrink: 0 }} />}
                   </button>
                 ))}
               </div>
@@ -172,107 +201,128 @@ export default function ChatInterface({ conversationId }: { conversationId: stri
           )}
         </AnimatePresence>
 
-        <div className="flex items-end gap-2 rounded-2xl px-3 py-2"
+        {/* Input box */}
+        <div className="rounded-2xl overflow-hidden"
           style={{ background: "var(--color-surface2)", border: "1px solid var(--color-border)" }}>
 
-          {/* Model selector button — left side of input bar */}
-          <button
-            type="button"
-            onPointerDown={(e) => { e.preventDefault(); setModelPickerOpen((v) => !v); }}
-            className="flex-shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all self-end mb-1"
-            style={{
-              background: modelPickerOpen ? "var(--color-surface3)" : "transparent",
-              color: "var(--color-muted)",
-              border: "1px solid var(--color-border)",
-              maxWidth: 160,
-            }}
-          >
-            <span className="truncate">{displayModelName}</span>
-            {modelPickerOpen ? <ChevronDown size={11} /> : <ChevronUp size={11} />}
-          </button>
+          {/* Textarea row */}
+          <div className="flex items-end px-3 pt-2 gap-2">
+            <textarea
+              ref={textRef}
+              value={input}
+              onChange={(e) => {
+                setInput(e.target.value);
+                e.target.style.height = "auto";
+                e.target.style.height = Math.min(e.target.scrollHeight, 140) + "px";
+              }}
+              onKeyDown={handleKey}
+              placeholder="Message APEX..."
+              rows={1}
+              className="flex-1 bg-transparent text-sm resize-none outline-none py-2"
+              style={{ color: "var(--color-text)", maxHeight: 140, lineHeight: 1.5 }}
+            />
+          </div>
 
-          <textarea
-            ref={textRef}
-            value={input}
-            onChange={(e) => {
-              setInput(e.target.value);
-              e.target.style.height = "auto";
-              e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
-            }}
-            onKeyDown={handleKey}
-            placeholder="Message APEX..."
-            rows={1}
-            className="flex-1 bg-transparent text-sm resize-none outline-none py-2"
-            style={{ color: "var(--color-text)", maxHeight: 160 }}
-          />
+          {/* Bottom toolbar row: model picker + send */}
+          <div className="flex items-center justify-between px-2 pb-2 pt-1">
+            {/* Model selector button */}
+            <button
+              type="button"
+              onPointerDown={(e) => {
+                e.preventDefault();
+                setModelPickerOpen((v) => !v);
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-all"
+              style={{
+                background: modelPickerOpen ? "var(--color-surface3)" : "var(--color-surface)",
+                color: "var(--color-muted)",
+                border: "1px solid var(--color-border)",
+              }}
+            >
+              <span className="truncate" style={{ maxWidth: 130 }}>{displayName}</span>
+              {modelPickerOpen ? <ChevronDown size={11} /> : <ChevronUp size={11} />}
+            </button>
 
-          <button
-            type="button"
-            onPointerDown={(e) => { e.preventDefault(); send(); }}
-            className="flex-shrink-0 mb-1"
-            style={{
-              width: 36,
-              height: 36,
-              borderRadius: 12,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              background: hasInput && !isRunning ? "var(--color-cyan2)" : "var(--color-surface3)",
-              opacity: hasInput && !isRunning ? 1 : 0.45,
-              cursor: "pointer",
-              border: "none",
-              zIndex: 100,
-              flexShrink: 0,
-            }}>
-            {isRunning ? <Square size={14} /> : <Send size={14} color={hasInput ? "#000" : "#666"} />}
-          </button>
+            {/* Send button */}
+            <button
+              type="button"
+              onPointerDown={(e) => {
+                e.preventDefault();
+                send();
+              }}
+              style={{
+                width: 34,
+                height: 34,
+                borderRadius: 12,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                background: hasInput && !isRunning ? "var(--color-cyan2)" : "var(--color-surface3)",
+                opacity: hasInput && !isRunning ? 1 : 0.4,
+                border: "none",
+                cursor: hasInput && !isRunning ? "pointer" : "default",
+                flexShrink: 0,
+              }}
+            >
+              {isRunning
+                ? <Square size={13} style={{ color: "var(--color-text)" }} />
+                : <Send size={13} color={hasInput ? "#000" : "#666"} />
+              }
+            </button>
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-// ---- MessageItem ----
-function MessageItem({ msg }: { msg: AgentMessage }) {
-  const isUser = msg.role === "user";
+// ---- Tool event item ----
+function ToolItem({ event }: { event: any }) {
   const [expanded, setExpanded] = React.useState(false);
+  const Icon = TOOL_ICONS[event.tool] || Bot;
+  const color = TOOL_COLORS[event.tool] || "var(--color-muted)";
+  const isResult = event.type === "tool_result";
+  const content = event.result || JSON.stringify(event.args, null, 2) || "";
+  const lines = content.split("\n");
+  const preview = lines.slice(0, 2).join("\n");
+  const hasMore = lines.length > 2;
 
-  if (msg.type === "tool_use" || msg.type === "tool_result") {
-    const Icon = TOOL_ICONS[msg.tool || ""] || Bot;
-    const color = TOOL_COLORS[msg.tool || ""] || "var(--color-muted)";
-    const isResult = msg.type === "tool_result";
-    const lines = (msg.content || "").split("\n");
-    const preview = lines.slice(0, 3).join("\n");
-    const hasMore = lines.length > 3;
+  return (
+    <motion.div initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }}
+      className="rounded-xl overflow-hidden text-xs font-mono"
+      style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}>
+      <button onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center gap-2 px-3 py-2 text-left"
+        style={{ borderBottom: expanded ? "1px solid var(--color-border)" : "none" }}>
+        <Icon size={12} style={{ color, flexShrink: 0 }} />
+        <span style={{ color }}>{event.tool}</span>
+        {event.args?.command && (
+          <span className="ml-1 truncate opacity-60" style={{ color: "var(--color-muted)" }}>{event.args.command}</span>
+        )}
+        {event.args?.path && (
+          <span className="ml-1 truncate opacity-60" style={{ color: "var(--color-muted)" }}>{event.args.path}</span>
+        )}
+        <span className="ml-auto flex-shrink-0" style={{ color: "var(--color-muted)" }}>
+          {expanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+        </span>
+      </button>
+      {expanded && (
+        <div className="px-3 py-2 overflow-x-auto" style={{ color: "var(--color-muted)", maxHeight: 240, overflowY: "auto" }}>
+          <pre className="whitespace-pre-wrap break-all text-[11px]">{content}</pre>
+        </div>
+      )}
+      {!expanded && isResult && content && (
+        <div className="px-3 pb-2 pt-0.5" style={{ color: "var(--color-muted)" }}>
+          <pre className="whitespace-pre-wrap break-all text-[11px] opacity-60">{preview}{hasMore ? "\n..." : ""}</pre>
+        </div>
+      )}
+    </motion.div>
+  );
+}
 
-    return (
-      <motion.div initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }}
-        className="rounded-xl overflow-hidden text-xs font-mono"
-        style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}>
-        <button onClick={() => setExpanded(!expanded)}
-          className="w-full flex items-center gap-2 px-3 py-2 text-left"
-          style={{ borderBottom: expanded ? "1px solid var(--color-border)" : "none" }}>
-          <Icon size={12} style={{ color, flexShrink: 0 }} />
-          <span style={{ color }}>{msg.tool}</span>
-          {msg.args?.command && <span className="ml-1 truncate opacity-60" style={{ color: "var(--color-muted)" }}>{msg.args.command}</span>}
-          {msg.args?.path && <span className="ml-1 truncate opacity-60" style={{ color: "var(--color-muted)" }}>{msg.args.path}</span>}
-          <span className="ml-auto flex-shrink-0" style={{ color: "var(--color-muted)" }}>
-            {expanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
-          </span>
-        </button>
-        {expanded && (
-          <div className="px-3 py-2 overflow-x-auto" style={{ color: "var(--color-muted)", maxHeight: 300, overflowY: "auto" }}>
-            <pre className="whitespace-pre-wrap break-all text-[11px]">{msg.content || JSON.stringify(msg.args, null, 2)}</pre>
-          </div>
-        )}
-        {!expanded && isResult && (
-          <div className="px-3 pb-2 pt-1" style={{ color: "var(--color-muted)" }}>
-            <pre className="whitespace-pre-wrap break-all text-[11px] opacity-70">{preview}{hasMore ? "\n..." : ""}</pre>
-          </div>
-        )}
-      </motion.div>
-    );
-  }
+// ---- Message item ----
+function MessageItem({ msg }: { msg: any }) {
+  const isUser = msg.role === "user";
 
   return (
     <motion.div initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }}
@@ -283,8 +333,8 @@ function MessageItem({ msg }: { msg: AgentMessage }) {
           <Bot size={14} style={{ color: "var(--color-cyan)" }} />
         </div>
       )}
-      <div className={cn("max-w-[85%] rounded-2xl px-4 py-3 text-sm",
-        isUser ? "rounded-tr-sm" : "rounded-tl-sm")}
+      <div
+        className={cn("max-w-[85%] rounded-2xl px-4 py-3 text-sm", isUser ? "rounded-tr-sm" : "rounded-tl-sm")}
         style={{
           background: isUser ? "var(--color-cyan2)" : "var(--color-surface)",
           color: isUser ? "#000" : "var(--color-text)",
@@ -294,7 +344,9 @@ function MessageItem({ msg }: { msg: AgentMessage }) {
           <p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>
         ) : (
           <div className="prose prose-invert prose-sm max-w-none">
-            <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{msg.content || "▋"}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+              {msg.content || "▋"}
+            </ReactMarkdown>
           </div>
         )}
       </div>
