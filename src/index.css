@@ -1,7 +1,7 @@
 --- START OF FILE Coding-agent-main/src/index.css ---
 @import "tailwindcss";
 
-@theme {
+:root {
   --color-bg: #09090b;
   --color-surface: #18181b;
   --color-surface2: #27272a;
