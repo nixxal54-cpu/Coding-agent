@@ -105,8 +105,10 @@ export default function ChatInterface({ conversationId }: { conversationId: stri
       {/* Header */}
       <div className="h-14 flex items-center px-5 gap-3 border-b flex-shrink-0"
         style={{ borderColor: "var(--color-border)", background: "var(--color-bg)" }}>
-        <div className={cn("w-2 h-2 rounded-full flex-shrink-0 transition-all",
-          isRunning ? "bg-green-500 animate-pulse shadow-[0_0_8px_rgba(74,222,128,0.6)]" : "bg-gray-600")} />
+        <div 
+          className={cn("w-2 h-2 rounded-full flex-shrink-0 transition-all", isRunning ? "bg-green-500 animate-pulse" : "bg-gray-600")} 
+          style={{ boxShadow: isRunning ? "0 0 8px rgba(74,222,128,0.6)" : "none" }}
+        />
         <span className="text-sm font-semibold tracking-tight text-white">APEX Workspace</span>
       </div>
 
@@ -185,7 +187,7 @@ export default function ChatInterface({ conversationId }: { conversationId: stri
               <button
                 type="button"
                 onPointerDown={(e) => { e.preventDefault(); setModelPickerOpen((v) => !v); }}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium hover:bg-zinc-800 transition-colors"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium hover:bg-zinc-800/50 transition-colors"
                 style={{ color: "var(--color-muted)" }}
               >
                 <span className="truncate max-w-[150px]">{displayName}</span>
