@@ -40,6 +40,18 @@ async function saveConversations(data: any) {
 }
 let conversationsDB: Record<string, any> = await loadConversations();
 
+// --- Groq Models (all available) ---
+const GROQ_MODELS = [
+  { id: "llama-3.3-70b-versatile", name: "Llama 3.3 70B", description: "Most capable, best for complex tasks", recommended: true },
+  { id: "llama-3.1-8b-instant", name: "Llama 3.1 8B Instant", description: "Ultra-fast, great for quick tasks", fast: true },
+  { id: "llama3-70b-8192", name: "Llama 3 70B", description: "Reliable and powerful" },
+  { id: "llama3-8b-8192", name: "Llama 3 8B", description: "Lightweight and fast" },
+  { id: "gemma2-9b-it", name: "Gemma 2 9B", description: "Google's efficient model" },
+  { id: "mixtral-8x7b-32768", name: "Mixtral 8x7B", description: "Large context, 32K tokens" },
+  { id: "deepseek-r1-distill-llama-70b", name: "DeepSeek R1 70B", description: "Strong reasoning model" },
+  { id: "qwen-qwq-32b", name: "Qwen QwQ 32B", description: "Advanced reasoning & math" },
+];
+
 // --- Skills ---
 const SKILLS: Record<string, any> = {
   "create-react": { name: "Create React + Vite", description: "Scaffold a React+Vite+TypeScript+Tailwind app", icon: "⚛️", prompt: "Create a new React app using Vite with TypeScript and Tailwind CSS v4. Set up proper folder structure (src/components, src/pages, src/hooks). Install all deps and verify it works." },
@@ -62,14 +74,10 @@ async function ensureWorkspace(id: string) {
   return p;
 }
 
-function getClient(model: string): { client: OpenAI; modelId: string } {
-  if (model.startsWith("gpt-") || model.startsWith("o1") || model.startsWith("o3")) {
-    return { client: new OpenAI({ apiKey: process.env.OPENAI_API_KEY || "missing" }), modelId: model };
-  }
-  if (model.startsWith("gemini")) {
-    return { client: new OpenAI({ apiKey: process.env.GEMINI_API_KEY || "missing", baseURL: "https://generativelanguage.googleapis.com/v1beta/openai" }), modelId: model };
-  }
-  return { client: new OpenAI({ apiKey: process.env.GROQ_API_KEY || "missing", baseURL: "https://api.groq.com/openai/v1" }), modelId: model };
+function getGroqClient(): OpenAI {
+  const key = process.env.GROQ_API_KEY;
+  if (!key) throw new Error("GROQ_API_KEY is not set. Add it to your .env file: GROQ_API_KEY=your_key_here");
+  return new OpenAI({ apiKey: key, baseURL: "https://api.groq.com/openai/v1" });
 }
 
 function runCommand(command: string, cwd: string, timeout = 120000): Promise<{ output: string; exitCode: number }> {
@@ -225,30 +233,10 @@ async function executeTool(name: string, args: any, workspace: string): Promise<
 }
 
 // --- API Routes ---
-app.get("/api/health", (_, res) => res.json({ status: "ok", version: "2.0.0" }));
+app.get("/api/health", (_, res) => res.json({ status: "ok", version: "2.0.0", provider: "groq" }));
 app.get("/api/skills", (_, res) => res.json(Object.entries(SKILLS).map(([id, s]) => ({ id, ...s }))));
-app.get("/api/models", (_, res) => res.json([
-  { id: "llama-3.3-70b-versatile", name: "Llama 3.3 70B", provider: "groq", recommended: true },
-  { id: "llama-3.1-8b-instant", name: "Llama 3.1 8B (Fast)", provider: "groq", fast: true },
-  { id: "gemma2-9b-it", name: "Gemma 2 9B", provider: "groq" },
-  { id: "gpt-4o", name: "GPT-4o", provider: "openai" },
-  { id: "gpt-4o-mini", name: "GPT-4o Mini", provider: "openai", fast: true },
-  { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash", provider: "google", fast: true },
-]));
-app.get("/api/settings", (_, res) => res.json({
-  has_groq_key: !!process.env.GROQ_API_KEY,
-  has_openai_key: !!process.env.OPENAI_API_KEY,
-  has_gemini_key: !!process.env.GEMINI_API_KEY,
-}));
-app.post("/api/settings/keys", async (req, res) => {
-  const { groq_key, openai_key, gemini_key } = req.body;
-  let env = ""; try { env = await fs.readFile(".env", "utf-8"); } catch {}
-  if (groq_key) { env = env.replace(/GROQ_API_KEY=.*/g, ""); process.env.GROQ_API_KEY = groq_key; env += `\nGROQ_API_KEY=${groq_key}`; }
-  if (openai_key) { env = env.replace(/OPENAI_API_KEY=.*/g, ""); process.env.OPENAI_API_KEY = openai_key; env += `\nOPENAI_API_KEY=${openai_key}`; }
-  if (gemini_key) { env = env.replace(/GEMINI_API_KEY=.*/g, ""); process.env.GEMINI_API_KEY = gemini_key; env += `\nGEMINI_API_KEY=${gemini_key}`; }
-  await fs.writeFile(".env", env.trim());
-  res.json({ success: true });
-});
+app.get("/api/models", (_, res) => res.json(GROQ_MODELS));
+app.get("/api/settings", (_, res) => res.json({ has_groq_key: !!process.env.GROQ_API_KEY, provider: "groq" }));
 
 app.get("/api/conversations", (_, res) => {
   const result = Object.values(conversationsDB)
@@ -304,7 +292,7 @@ app.post("/api/terminal/run", async (req, res) => {
 // --- Socket ---
 io.on("connection", (socket) => {
   socket.on("join_conversation", ({ conversation_id }) => { socket.join(conversation_id); socket.emit("joined", { conversation_id }); });
-  
+
   socket.on("terminal_run", async ({ conversation_id, command }) => {
     const w = await ensureWorkspace(conversation_id);
     socket.emit("terminal_start", { command });
@@ -323,16 +311,16 @@ io.on("connection", (socket) => {
     io.to(conversation_id).emit("agent_status", { status: "running" });
     const assistantId = uuidv4();
     io.to(conversation_id).emit("message_start", { id: assistantId, role: "assistant", timestamp: new Date().toISOString() });
-    
+
     const history: any[] = [{ role: "system", content: SYSTEM_PROMPT }, ...conv.messages.slice(-20).map((m: any) => ({ role: m.role, content: m.content }))];
     const workspace = await ensureWorkspace(conversation_id);
     let fullResponse = "";
-    
+
     try {
-      const { client, modelId } = getClient(selectedModel);
+      const client = getGroqClient();
       let loops = 0;
       while (loops++ < 12) {
-        const stream = await (client.chat.completions.create as any)({ model: modelId, messages: history, tools: TOOLS, tool_choice: "auto", stream: true, temperature: 0.3 });
+        const stream = await (client.chat.completions.create as any)({ model: selectedModel, messages: history, tools: TOOLS, tool_choice: "auto", stream: true, temperature: 0.3 });
         let currentContent = ""; let toolCalls: any[] = [];
         for await (const chunk of stream as AsyncIterable<any>) {
           const delta = (chunk as any).choices[0]?.delta;
@@ -368,7 +356,7 @@ io.on("connection", (socket) => {
     } catch (e: any) {
       const msg = e.message || "Error"; io.to(conversation_id).emit("error", { message: msg }); fullResponse += `\n\n⚠️ Error: ${msg}`;
     }
-    
+
     conv.messages.push({ id: assistantId, role: "assistant", content: fullResponse, timestamp: new Date().toISOString() });
     conv.message_count = conv.messages.length; conv.updated_at = new Date().toISOString(); conv.status = "idle";
     if (conv.messages.length === 2) conv.title = content.slice(0, 60);
