@@ -1,6 +1,3 @@
 import axios from "axios";
-
-export const api = axios.create({
-  baseURL: "/",
-  headers: { "Content-Type": "application/json" },
-});
+const instance = axios.create({ baseURL: window.location.origin });
+export default instance;
