@@ -99,7 +99,7 @@ export default function Sidebar() {
       {/* Footer */}
       <div className="p-3 border-t" style={{ borderColor: "var(--color-border)" }}>
         <button onClick={() => navigate("/settings")} className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors hover:opacity-80" style={{ color: "var(--color-muted)" }}>
-          <Settings size={15} /> Settings & API Keys
+          <Settings size={15} /> Settings
         </button>
       </div>
     </aside>
