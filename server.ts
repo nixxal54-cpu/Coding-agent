@@ -16,7 +16,7 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 const WORKSPACE_DIR = path.join(process.cwd(), "agent_workspace");
 const DATA_DIR = path.join(process.cwd(), "agent_data");
 const CONVERSATIONS_FILE = path.join(DATA_DIR, "conversations.json");
