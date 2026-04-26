@@ -1,115 +1,113 @@
 import React from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { getSocket, runTerminalCommand } from "@/src/socket/socket";
+import { Play, Trash2, ChevronUp } from "lucide-react";
 import "@xterm/xterm/css/xterm.css";
-import { useEventStore } from "@/src/stores/event-store";
-import { api } from "@/src/api/axios";
 
-interface TerminalProps {
-  conversationId: string;
-}
-
-export default function Terminal({ conversationId }: TerminalProps) {
-  const terminalRef = React.useRef<HTMLDivElement>(null);
-  const xtermRef = React.useRef<XTerm | null>(null);
-  const { toolEvents } = useEventStore();
-  const [input, setInput] = React.useState("");
+export default function Terminal({ conversationId }: { conversationId: string }) {
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const termRef = React.useRef<XTerm | null>(null);
+  const fitRef = React.useRef<FitAddon | null>(null);
+  const [command, setCommand] = React.useState("");
+  const [history, setHistory] = React.useState<string[]>([]);
+  const [histIdx, setHistIdx] = React.useState(-1);
+  const [running, setRunning] = React.useState(false);
 
   React.useEffect(() => {
-    if (!terminalRef.current) return;
-
+    if (!containerRef.current || termRef.current) return;
     const term = new XTerm({
-      theme: {
-        background: "#0d0f11",
-        foreground: "#e6edf3",
-        cursor: "#58a6ff",
-        selectionBackground: "rgba(88, 166, 255, 0.3)",
-        black: "#484f58",
-        red: "#f85149",
-        green: "#3fb950",
-        yellow: "#d29922",
-        blue: "#58a6ff",
-        magenta: "#bc8cff",
-        cyan: "#39c5cf",
-        white: "#e6edf3",
-      },
-      fontFamily: '"JetBrains Mono", monospace',
+      theme: { background: "#080b0f", foreground: "#e2eaf4", cursor: "#38bdf8", cursorAccent: "#080b0f", black: "#080b0f", brightBlack: "#6b8299", red: "#f87171", brightRed: "#f87171", green: "#4ade80", brightGreen: "#4ade80", yellow: "#fbbf24", brightYellow: "#fbbf24", blue: "#38bdf8", brightBlue: "#38bdf8", magenta: "#a78bfa", brightMagenta: "#a78bfa", cyan: "#38bdf8", brightCyan: "#38bdf8", white: "#e2eaf4", brightWhite: "#ffffff" },
+      fontFamily: "'JetBrains Mono', monospace",
       fontSize: 13,
-      lineHeight: 1.4,
+      lineHeight: 1.5,
       cursorBlink: true,
-      convertEol: true,
+      scrollback: 3000,
+    });
+    const fit = new FitAddon();
+    term.loadAddon(fit);
+    term.open(containerRef.current);
+    fit.fit();
+    termRef.current = term;
+    fitRef.current = fit;
+    term.writeln("\x1b[1;36m╔══════════════════════════════╗\x1b[0m");
+    term.writeln("\x1b[1;36m║    APEX Agent Terminal       ║\x1b[0m");
+    term.writeln("\x1b[1;36m╚══════════════════════════════╝\x1b[0m");
+    term.writeln("\x1b[90mType commands below or let the agent run them automatically.\x1b[0m");
+    term.writeln("");
+
+    const resizeObserver = new ResizeObserver(() => { try { fit.fit(); } catch {} });
+    resizeObserver.observe(containerRef.current);
+
+    const socket = getSocket();
+    socket.on("terminal_start", ({ command }: any) => {
+      term.writeln(`\x1b[1;33m$ ${command}\x1b[0m`);
+      setRunning(true);
+    });
+    socket.on("terminal_data", ({ data }: any) => { term.write(data); });
+    socket.on("terminal_done", () => { term.writeln("\x1b[90m[done]\x1b[0m"); setRunning(false); });
+    socket.on("tool_use", ({ tool, args }: any) => {
+      if (tool === "run_command" && args?.command) {
+        term.writeln(`\x1b[1;33m$ ${args.command}\x1b[0m`);
+      }
+    });
+    socket.on("tool_result", ({ tool, result }: any) => {
+      if (tool === "run_command") {
+        term.writeln(String(result));
+      }
     });
 
-    const fitAddon = new FitAddon();
-    term.loadAddon(fitAddon);
-    term.open(terminalRef.current);
-    fitAddon.fit();
-
-    term.writeln("\x1b[32mWelcome to the Agent Terminal\x1b[0m");
-    term.writeln("Ready for action.");
-    term.write("\r\n$ ");
-
-    xtermRef.current = term;
-
-    const handleResize = () => fitAddon.fit();
-    window.addEventListener("resize", handleResize);
-
     return () => {
+      socket.off("terminal_start"); socket.off("terminal_data"); socket.off("terminal_done");
+      socket.off("tool_use"); socket.off("tool_result");
+      resizeObserver.disconnect();
       term.dispose();
-      window.removeEventListener("resize", handleResize);
+      termRef.current = null;
     };
   }, []);
 
-  // Listen for tool results specifically run_command
-  React.useEffect(() => {
-    if (!xtermRef.current) return;
-    
-    // Sort events by timestamp and get the latest
-    const lastEvent = toolEvents[toolEvents.length - 1];
-    if (lastEvent?.type === "tool_result" && lastEvent.tool === "run_command") {
-        xtermRef.current.writeln(`\r\n\x1b[34m[Agent Command Result]\x1b[0m`);
-        xtermRef.current.writeln(lastEvent.result || "");
-        xtermRef.current.write("\r\n$ ");
-    } else if (lastEvent?.type === "tool_use" && lastEvent.tool === "run_command") {
-        xtermRef.current.writeln(`\r\n\x1b[32m$ ${lastEvent.args?.command}\x1b[0m`);
+  const run = () => {
+    if (!command.trim() || running) return;
+    setHistory((h) => [command, ...h.slice(0, 50)]);
+    setHistIdx(-1);
+    runTerminalCommand(conversationId, command);
+    setCommand("");
+  };
+
+  const handleKey = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") { run(); return; }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      const next = Math.min(histIdx + 1, history.length - 1);
+      setHistIdx(next); setCommand(history[next] || "");
     }
-  }, [toolEvents]);
-
-  const handleManualCommand = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!input.trim() || !xtermRef.current) return;
-
-    const cmd = input.trim();
-    xtermRef.current.writeln(`\x1b[32m$ ${cmd}\x1b[0m`);
-    setInput("");
-
-    try {
-      const { data } = await api.post("/api/terminal/run", {
-        conversation_id: conversationId,
-        command: cmd
-      });
-      xtermRef.current.writeln(data.output);
-      xtermRef.current.write("\r\n$ ");
-    } catch (err) {
-      xtermRef.current.writeln(`\x1b[31mError: ${err}\x1b[0m`);
-      xtermRef.current.write("\r\n$ ");
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      const next = Math.max(histIdx - 1, -1);
+      setHistIdx(next); setCommand(next === -1 ? "" : history[next]);
     }
   };
 
+  const clear = () => { termRef.current?.clear(); };
+
   return (
-    <div className="flex flex-col h-full bg-bg-base overflow-hidden p-4">
-      <div className="flex-1 w-full xterm-container overflow-hidden" ref={terminalRef} />
-      <div className="mt-4 border-t border-border pt-4">
-        <form onSubmit={handleManualCommand} className="flex gap-2">
-          <span className="text-accent font-mono py-2">$</span>
-          <input
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="Run manual command..."
-            className="flex-1 bg-transparent border-none focus:ring-0 text-text-primary font-mono text-sm"
-          />
-        </form>
+    <div className="flex flex-col h-full" style={{ background: "var(--color-bg)" }}>
+      <div ref={containerRef} className="flex-1 p-2" />
+      <div className="border-t flex items-center gap-2 px-3 py-2" style={{ borderColor: "var(--color-border)", background: "var(--color-surface)" }}>
+        <span className="font-mono text-xs flex-shrink-0" style={{ color: "var(--color-cyan)" }}>$</span>
+        <input
+          value={command}
+          onChange={(e) => setCommand(e.target.value)}
+          onKeyDown={handleKey}
+          placeholder={running ? "Running..." : "Enter command..."}
+          disabled={running}
+          className="flex-1 bg-transparent text-sm font-mono outline-none disabled:opacity-50"
+          style={{ color: "var(--color-text)", fontFamily: "var(--font-mono)" }}
+        />
+        <button onClick={clear} className="p-1.5 rounded transition-colors" style={{ color: "var(--color-muted)" }}><Trash2 size={13} /></button>
+        <button onClick={run} disabled={!command.trim() || running} className="px-3 py-1 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all disabled:opacity-30" style={{ background: "var(--color-cyan2)", color: "#000" }}>
+          <Play size={12} fill="#000" /> Run
+        </button>
       </div>
     </div>
   );
