@@ -5,14 +5,27 @@ let socket: Socket;
 export function getSocket(): Socket {
   if (!socket) {
     socket = io(window.location.origin, { transports: ["websocket", "polling"] });
-    socket.on("connect", () => console.log("Socket connected:", socket.id));
+    
+    socket.on("connect", () => {
+      console.log("Socket connected:", socket.id);
+      // BUG FIX: Automatically rejoin the room on connect/reconnect
+      const currentUrl = window.location.pathname;
+      if (currentUrl.includes("/conversations/")) {
+         const id = currentUrl.split("/").pop();
+         if (id) socket.emit("join_conversation", { conversation_id: id });
+      }
+    });
+    
     socket.on("disconnect", () => console.log("Socket disconnected"));
   }
   return socket;
 }
 
 export function joinConversation(id: string) {
-  getSocket().emit("join_conversation", { conversation_id: id });
+  // We check if connected. If not, the 'connect' listener above handles it.
+  if (getSocket().connected) {
+    getSocket().emit("join_conversation", { conversation_id: id });
+  }
 }
 
 export function sendAgentMessage(id: string, content: string, model?: string) {
