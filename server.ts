@@ -46,14 +46,15 @@ let conversationsDB: Record<string, any> = await loadConversations();
 
 // --- Groq Models ---
 const GROQ_MODELS = [
-  { id: "llama-3.3-70b-versatile", name: "Llama 3.3 70B", description: "Most capable, best for complex tasks", recommended: true },
-  { id: "llama-3.1-8b-instant", name: "Llama 3.1 8B Instant", description: "Ultra-fast, great for quick tasks", fast: true },
-  { id: "llama3-70b-8192", name: "Llama 3 70B", description: "Reliable and powerful" },
-  { id: "llama3-8b-8192", name: "Llama 3 8B", description: "Lightweight and fast" },
-  { id: "gemma2-9b-it", name: "Gemma 2 9B", description: "Google's efficient model" },
-  { id: "mixtral-8x7b-32768", name: "Mixtral 8x7B", description: "Large context, 32K tokens" },
-  { id: "deepseek-r1-distill-llama-70b", name: "DeepSeek R1 70B", description: "Strong reasoning model" },
-  { id: "qwen-qwq-32b", name: "Qwen QwQ 32B", description: "Advanced reasoning & math" },
+  { id: "openai/gpt-oss-120b", name: "GPT-OSS 120B", description: "Most powerful — 120B params, 131K ctx, best reasoning", recommended: true },
+  { id: "openai/gpt-oss-20b", name: "GPT-OSS 20B", description: "Fast & capable — 20B params, 131K ctx, great balance", fast: true },
+  { id: "groq/compound", name: "Groq Compound", description: "Agentic AI system with built-in web search and code execution" },
+  { id: "meta-llama/llama-4-scout-17b-16e-instruct", name: "Llama 4 Scout 17B", description: "Meta's latest — multimodal, 10M ctx window" },
+  { id: "llama-3.3-70b-versatile", name: "Llama 3.3 70B", description: "Production-grade, reliable for complex tasks" },
+  { id: "qwen/qwen3-32b", name: "Qwen3 32B", description: "Strong reasoning & math, thinking model" },
+  { id: "llama-3.1-8b-instant", name: "Llama 3.1 8B", description: "Ultra-fast, 675 t/s — best for quick tasks", fast: true },
+  { id: "whisper-large-v3", name: "Whisper Large v3", description: "OpenAI speech-to-text, highest accuracy", audio: true },
+  { id: "whisper-large-v3-turbo", name: "Whisper Large v3 Turbo", description: "Faster Whisper — optimized speech-to-text", audio: true, fast: true },
 ];
 
 // --- Skills ---
