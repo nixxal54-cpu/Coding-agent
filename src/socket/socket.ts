@@ -1,3 +1,4 @@
+// src/socket/socket.ts
 import { io, Socket } from "socket.io-client";
 import toast from "react-hot-toast";
 
@@ -5,16 +6,13 @@ let socket: Socket;
 
 export function getSocket(): Socket {
   if (!socket) {
-    // Connect to the same host but always port 3000 (Express server)
-    // If running behind a proxy/tunnel, use the same origin
-    const serverUrl = window.location.hostname === "localhost"
-      ? "http://localhost:3000"
-      : window.location.origin;
+    // Always connect via same origin — Vite proxy handles /socket.io → :3000 in dev,
+    // and Express serves both frontend + socket on the same port in prod.
+    console.log("[Socket] Connecting to:", window.location.origin);
 
-    console.log("[Socket] Connecting to:", serverUrl);
-
-    socket = io(serverUrl, {
-      transports: ["polling", "websocket"],
+    socket = io(window.location.origin, {
+      path: "/socket.io",
+      transports: ["websocket", "polling"], // prefer websocket, fall back to polling
       reconnection: true,
       reconnectionAttempts: 10,
       reconnectionDelay: 1000,
@@ -44,6 +42,8 @@ export function getSocket(): Socket {
   }
   return socket;
 }
+
+// ... rest unchanged
 
 export function joinConversation(id: string) {
   const s = getSocket();
