@@ -250,6 +250,19 @@ async function executeTool(name: string, args: any, workspace: string): Promise<
 
 // --- API Routes ---
 app.get("/api/health", (_, res) => res.json({ status: "ok", version: "2.0.0", provider: "groq" }));
+app.get("/api/test-groq", async (_, res) => {
+  try {
+    const client = getGroqClient();
+    const result = await client.chat.completions.create({
+      model: "llama-3.1-8b-instant",
+      messages: [{ role: "user", content: "Say OK" }],
+      max_tokens: 10,
+    });
+    res.json({ ok: true, reply: result.choices[0]?.message?.content });
+  } catch (e: any) {
+    res.json({ ok: false, error: e.message });
+  }
+});
 app.get("/api/skills", (_, res) => res.json(Object.entries(SKILLS).map(([id, s]) => ({ id, ...s }))));
 app.get("/api/models", (_, res) => res.json(GROQ_MODELS));
 app.get("/api/settings", (_, res) => res.json({ has_groq_key: !!process.env.GROQ_API_KEY, provider: "groq" }));
