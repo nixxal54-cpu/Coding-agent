@@ -5,31 +5,29 @@ let socket: Socket;
 export function getSocket(): Socket {
   if (!socket) {
     socket = io(window.location.origin, { transports: ["websocket", "polling"] });
-    
-    socket.on("connect", () => {
-      console.log("Socket connected:", socket.id);
-      // BUG FIX: Automatically rejoin the room on connect/reconnect
-      const currentUrl = window.location.pathname;
-      if (currentUrl.includes("/conversations/")) {
-         const id = currentUrl.split("/").pop();
-         if (id) socket.emit("join_conversation", { conversation_id: id });
-      }
-    });
-    
+    socket.on("connect", () => console.log("Socket connected:", socket.id));
     socket.on("disconnect", () => console.log("Socket disconnected"));
   }
   return socket;
 }
 
 export function joinConversation(id: string) {
-  // We check if connected. If not, the 'connect' listener above handles it.
-  if (getSocket().connected) {
-    getSocket().emit("join_conversation", { conversation_id: id });
+  const s = getSocket();
+  if (s.connected) {
+    s.emit("join_conversation", { conversation_id: id });
+  } else {
+    s.once("connect", () => s.emit("join_conversation", { conversation_id: id }));
   }
 }
 
 export function sendAgentMessage(id: string, content: string, model?: string) {
-  getSocket().emit("send_message", { conversation_id: id, content, model });
+  const s = getSocket();
+  const payload = { conversation_id: id, content, model };
+  if (s.connected) {
+    s.emit("send_message", payload);
+  } else {
+    s.once("connect", () => s.emit("send_message", payload));
+  }
 }
 
 export function runTerminalCommand(id: string, command: string) {
