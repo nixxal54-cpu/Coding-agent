@@ -1,4 +1,3 @@
---- START OF FILE Coding-agent-main/src/index.css ---
 @import "tailwindcss";
 
 * {
@@ -159,4 +158,3 @@ body {
 .animate-spin-slow { animation: spin-slow 2s linear infinite; }
 
 .xterm-viewport { background: transparent !important; }
---- END OF FILE Coding-agent-main/src/index.css ---
