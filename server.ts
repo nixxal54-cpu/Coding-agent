@@ -8,8 +8,10 @@ import { existsSync, mkdirSync } from "fs";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import { OpenAI } from "openai";
-import { spawn } from "child_process";
+import { spawn, ChildProcess } from "child_process";
 import { v4 as uuidv4 } from "uuid";
+import * as http from "http";
+import * as net from "net";
 
 dotenv.config();
 
@@ -32,56 +34,63 @@ const io = new Server(httpServer, {
   transports: ["polling", "websocket"],
   allowEIO3: true,
 });
-app.use(express.json({ limit: "10mb" }));
+app.use(express.json({ limit: "20mb" }));
+
+// --- Dev server tracking ---
+interface DevServer { port: number; process: ChildProcess; url: string; }
+const devServers: Map<string, DevServer> = new Map();
+let nextPort = 4000;
+
+// --- Proxy for live preview ---
+app.use("/preview/:convId", (req: any, res: any) => {
+  const ds = devServers.get(req.params.convId);
+  if (!ds) return res.status(404).send("<h2>No preview server running</h2><p>Ask the agent to start the dev server.</p>");
+  const proxyPath = req.url || "/";
+  const options = { hostname: "127.0.0.1", port: ds.port, path: proxyPath, method: req.method, headers: { ...req.headers, host: `127.0.0.1:${ds.port}` } };
+  const proxyReq = http.request(options, (proxyRes: any) => {
+    res.writeHead(proxyRes.statusCode || 200, proxyRes.headers);
+    proxyRes.pipe(res);
+  });
+  proxyReq.on("error", () => res.status(502).send("<h2>Preview server not ready yet</h2><p>Wait a moment and refresh.</p>"));
+  req.pipe(proxyReq);
+});
 
 // --- Persistence ---
 async function loadConversations() {
-  try { return JSON.parse(await fs.readFile(CONVERSATIONS_FILE, "utf-8")); }
-  catch { return {}; }
+  try { return JSON.parse(await fs.readFile(CONVERSATIONS_FILE, "utf-8")); } catch { return {}; }
 }
 async function saveConversations(data: any) {
   await fs.writeFile(CONVERSATIONS_FILE, JSON.stringify(data, null, 2));
 }
 let conversationsDB: Record<string, any> = await loadConversations();
 
-// --- Groq Models ---
 const GROQ_MODELS = [
-  { id: "openai/gpt-oss-120b", name: "GPT-OSS 120B", description: "Most powerful — 120B params, 131K ctx, best reasoning", recommended: true },
-  { id: "openai/gpt-oss-20b", name: "GPT-OSS 20B", description: "Fast & capable — 20B params, 131K ctx, great balance", fast: true },
-  { id: "groq/compound", name: "Groq Compound", description: "Agentic AI system with built-in web search and code execution" },
-  { id: "meta-llama/llama-4-scout-17b-16e-instruct", name: "Llama 4 Scout 17B", description: "Meta's latest — multimodal, 10M ctx window" },
-  { id: "llama-3.3-70b-versatile", name: "Llama 3.3 70B", description: "Production-grade, reliable for complex tasks" },
-  { id: "qwen/qwen3-32b", name: "Qwen3 32B", description: "Strong reasoning & math, thinking model" },
-  { id: "llama-3.1-8b-instant", name: "Llama 3.1 8B", description: "Ultra-fast, 675 t/s — best for quick tasks", fast: true },
-  { id: "whisper-large-v3", name: "Whisper Large v3", description: "OpenAI speech-to-text, highest accuracy", audio: true },
-  { id: "whisper-large-v3-turbo", name: "Whisper Large v3 Turbo", description: "Faster Whisper — optimized speech-to-text", audio: true, fast: true },
+  { id: "openai/gpt-oss-120b", name: "GPT-OSS 120B", description: "Most powerful — best reasoning", recommended: true },
+  { id: "openai/gpt-oss-20b", name: "GPT-OSS 20B", description: "Fast & capable", fast: true },
+  { id: "groq/compound", name: "Groq Compound", description: "Agentic + web search" },
+  { id: "meta-llama/llama-4-scout-17b-16e-instruct", name: "Llama 4 Scout", description: "Multimodal, 10M ctx" },
+  { id: "llama-3.3-70b-versatile", name: "Llama 3.3 70B", description: "Production-grade" },
+  { id: "qwen/qwen3-32b", name: "Qwen3 32B", description: "Strong reasoning & math" },
+  { id: "llama-3.1-8b-instant", name: "Llama 3.1 8B", description: "Ultra-fast", fast: true },
 ];
 
-// --- Skills ---
 const SKILLS: Record<string, any> = {
-  "create-react": { name: "Create React + Vite", description: "Scaffold a React+Vite+TypeScript+Tailwind app", icon: "⚛️", prompt: "Create a new React app using Vite with TypeScript and Tailwind CSS v4. Set up proper folder structure (src/components, src/pages, src/hooks). Install all deps and verify it works." },
-  "create-nextjs": { name: "Create Next.js App", description: "Scaffold a Next.js app with App Router", icon: "▲", prompt: "Create a new Next.js app with App Router, TypeScript, and Tailwind CSS. Set up project structure and install all dependencies." },
-  "create-express": { name: "Create Express API", description: "REST API with Express + TypeScript", icon: "🚀", prompt: "Create a REST API using Express.js with TypeScript. Include cors, helmet, morgan middleware, error handling, and sample CRUD routes. Add README with API docs." },
-  "create-python": { name: "Create Python App", description: "Python project with venv", icon: "🐍", prompt: "Create a Python project with virtual environment, requirements.txt, and proper structure. Set up a main.py entry point." },
-  "debug-code": { name: "Debug Code", description: "Find and fix bugs in workspace", icon: "🐛", prompt: "Analyze all code in my workspace, identify any bugs or errors, fix them, and explain what you changed." },
-  "add-tests": { name: "Add Unit Tests", description: "Generate tests for your code", icon: "✅", prompt: "Analyze the code in my workspace and write comprehensive unit tests using the appropriate framework." },
-  "code-review": { name: "Code Review", description: "Detailed code quality review", icon: "👀", prompt: "Perform a thorough code review: check for code quality, security issues, performance, and best practices. Give actionable feedback." },
-  "add-docker": { name: "Dockerize App", description: "Add Docker support", icon: "🐳", prompt: "Add Docker support to the workspace project: Dockerfile, .dockerignore, and docker-compose.yml." },
-  "generate-readme": { name: "Generate README", description: "Create a comprehensive README", icon: "📝", prompt: "Analyze my project and generate a comprehensive README.md with: overview, features, installation, usage, and contribution guide." },
-  "optimize": { name: "Optimize Performance", description: "Profile and optimize code", icon: "⚡", prompt: "Analyze the codebase for performance bottlenecks, unnecessary re-renders, memory leaks, and fix them." },
+  "create-react": { name: "Create React + Vite", description: "Scaffold React+Vite+TypeScript+Tailwind", icon: "⚛️", prompt: "Create a new React app using Vite with TypeScript and Tailwind CSS v4. Set up proper folder structure with src/components, src/pages, src/hooks. Create all necessary files including package.json, vite.config.ts, tailwind config, and a beautiful landing page. Run npm install." },
+  "create-nextjs": { name: "Create Next.js App", description: "Scaffold Next.js with App Router", icon: "▲", prompt: "Create a complete Next.js 15 app with App Router, TypeScript, and Tailwind CSS. Create all necessary files, a proper layout, and a beautiful homepage. Run npm install." },
+  "create-express": { name: "Create Express API", description: "REST API with Express + TypeScript", icon: "🚀", prompt: "Create a production REST API with Express.js, TypeScript, cors, helmet, express-validator, and CRUD routes for a users resource. Include README and run npm install." },
+  "create-python": { name: "Create Python App", description: "Python project with structure", icon: "🐍", prompt: "Create a well-structured Python project with pyproject.toml, src layout, example module, pytest tests, and README." },
+  "debug-code": { name: "Debug Code", description: "Find and fix all bugs", icon: "🐛", prompt: "Analyze all code in my workspace. Identify every bug, type error, or runtime issue. Fix them all and explain the changes." },
+  "add-docker": { name: "Dockerize App", description: "Production Docker setup", icon: "🐳", prompt: "Add complete Docker support: multi-stage Dockerfile, .dockerignore, docker-compose.yml, and README section." },
+  "generate-readme": { name: "Generate README", description: "Comprehensive project README", icon: "📝", prompt: "Analyze my project and create a beautiful README.md with: badges, overview, features, installation, usage examples, and contribution guide." },
+  "add-tests": { name: "Add Unit Tests", description: "Comprehensive test suite", icon: "✅", prompt: "Write a comprehensive test suite for my project covering edge cases and aiming for high coverage." },
 };
 
-// --- Helpers ---
 function getWorkspace(id: string) { return path.join(WORKSPACE_DIR, id); }
-async function ensureWorkspace(id: string) {
-  const p = getWorkspace(id);
-  await fs.mkdir(p, { recursive: true });
-  return p;
-}
+async function ensureWorkspace(id: string) { const p = getWorkspace(id); await fs.mkdir(p, { recursive: true }); return p; }
 
-function getGroqClient(): OpenAI {
+function getGroqClient() {
   const key = process.env.GROQ_API_KEY;
-  if (!key) throw new Error("GROQ_API_KEY is not set. Add it to your .env file: GROQ_API_KEY=your_key_here");
+  if (!key) throw new Error("GROQ_API_KEY not set. Add it to your .env file.");
   return new OpenAI({ apiKey: key, baseURL: "https://api.groq.com/openai/v1" });
 }
 
@@ -89,28 +98,46 @@ function runCommand(command: string, cwd: string, timeout = 120000): Promise<{ o
   return new Promise((resolve) => {
     const shell = spawn("bash", ["-c", command], { cwd });
     let output = "";
-    shell.stdout.on("data", (d) => (output += d.toString()));
-    shell.stderr.on("data", (d) => (output += d.toString()));
-    shell.on("close", (code) => resolve({ output: output || "(no output)", exitCode: code || 0 }));
+    shell.stdout.on("data", (d: any) => (output += d.toString()));
+    shell.stderr.on("data", (d: any) => (output += d.toString()));
     const t = setTimeout(() => { shell.kill(); resolve({ output: output + "\n[Timed out]", exitCode: -1 }); }, timeout);
-    shell.on("close", () => clearTimeout(t));
+    shell.on("close", (code: any) => { clearTimeout(t); resolve({ output: output || "(no output)", exitCode: code || 0 }); });
   });
 }
 
 function runCommandStreaming(command: string, cwd: string, onData: (d: string) => void, timeout = 120000): Promise<void> {
   return new Promise((resolve) => {
     const shell = spawn("bash", ["-c", command], { cwd });
-    shell.stdout.on("data", (d) => onData(d.toString()));
-    shell.stderr.on("data", (d) => onData(d.toString()));
-    shell.on("close", () => resolve());
+    shell.stdout.on("data", (d: any) => onData(d.toString()));
+    shell.stderr.on("data", (d: any) => onData(d.toString()));
     const t = setTimeout(() => { shell.kill(); onData("\n[Timed out]\n"); resolve(); }, timeout);
-    shell.on("close", () => clearTimeout(t));
+    shell.on("close", () => { clearTimeout(t); resolve(); });
   });
+}
+
+function isPortOpen(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const s = new net.Socket();
+    s.setTimeout(800);
+    s.on("connect", () => { s.destroy(); resolve(true); });
+    s.on("error", () => resolve(false));
+    s.on("timeout", () => resolve(false));
+    s.connect(port, "127.0.0.1");
+  });
+}
+
+async function waitForPort(port: number, maxWait = 30000): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < maxWait) {
+    if (await isPortOpen(port)) return true;
+    await new Promise(r => setTimeout(r, 600));
+  }
+  return false;
 }
 
 async function listDirectory(workspace: string, relPath = ""): Promise<any[]> {
   const fullPath = path.join(workspace, relPath);
-  const ignored = ["node_modules", ".git", "dist", ".next", "__pycache__", ".venv", "venv", ".DS_Store"];
+  const ignored = ["node_modules", ".git", "dist", ".next", "__pycache__", ".venv", "venv", ".DS_Store", ".cache", "build", ".turbo", "coverage"];
   try {
     const entries = await fs.readdir(fullPath, { withFileTypes: true });
     const items = await Promise.all(entries.map(async (e) => {
@@ -121,51 +148,99 @@ async function listDirectory(workspace: string, relPath = ""): Promise<any[]> {
       else { try { const s = await fs.stat(path.join(workspace, rel)); item.size = s.size; } catch {} }
       return item;
     }));
-    return items.filter(Boolean).sort((a, b) => a.type === b.type ? a.name.localeCompare(b.name) : a.type === "directory" ? -1 : 1);
+    return (items.filter(Boolean) as any[]).sort((a: any, b: any) => a.type === b.type ? a.name.localeCompare(b.name) : a.type === "directory" ? -1 : 1);
   } catch { return []; }
 }
 
-// --- Tools ---
 const TOOLS: any[] = [
-  { type: "function", function: { name: "run_command", description: "Run a bash command in the workspace. Use for installs, tests, git, etc.", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } },
-  { type: "function", function: { name: "read_file", description: "Read file contents (first 8000 chars)", parameters: { type: "object", properties: { path: { type: "string" }, start_line: { type: "number" }, end_line: { type: "number" } }, required: ["path"] } } },
-  { type: "function", function: { name: "write_file", description: "Write content to a file (creates dirs automatically)", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] } } },
-  { type: "function", function: { name: "edit_file", description: "Replace a specific string in a file. For targeted edits.", parameters: { type: "object", properties: { path: { type: "string" }, old_str: { type: "string" }, new_str: { type: "string" } }, required: ["path", "old_str", "new_str"] } } },
-  { type: "function", function: { name: "list_files", description: "List files in directory", parameters: { type: "object", properties: { path: { type: "string" }, recursive: { type: "boolean" } } } } },
+  { type: "function", function: { name: "write_file", description: "Write content to a file. Creates parent directories automatically. USE THIS for ALL code — never put code in your text response.", parameters: { type: "object", properties: { path: { type: "string", description: "Relative path from workspace root, e.g. src/App.tsx" }, content: { type: "string", description: "Complete file content to write" } }, required: ["path", "content"] } } },
+  { type: "function", function: { name: "edit_file", description: "Replace an exact string in an existing file. For surgical edits.", parameters: { type: "object", properties: { path: { type: "string" }, old_str: { type: "string", description: "Exact text to find" }, new_str: { type: "string", description: "Replacement text" } }, required: ["path", "old_str", "new_str"] } } },
+  { type: "function", function: { name: "patch_file", description: "Apply multiple targeted replacements to a file in one call.", parameters: { type: "object", properties: { path: { type: "string" }, patches: { type: "array", items: { type: "object", properties: { old_str: { type: "string" }, new_str: { type: "string" } }, required: ["old_str", "new_str"] } } }, required: ["path", "patches"] } } },
+  { type: "function", function: { name: "read_file", description: "Read file contents. Optional line range.", parameters: { type: "object", properties: { path: { type: "string" }, start_line: { type: "number" }, end_line: { type: "number" } }, required: ["path"] } } },
+  { type: "function", function: { name: "run_command", description: "Run a bash command (synchronous). Use for npm install, git, tests, builds. For dev servers use start_dev_server.", parameters: { type: "object", properties: { command: { type: "string" }, timeout_seconds: { type: "number" } }, required: ["command"] } } },
+  { type: "function", function: { name: "start_dev_server", description: "Start a dev server in the background and return a live preview URL. Detects the port automatically.", parameters: { type: "object", properties: { command: { type: "string", description: "Command to start the server, e.g. 'npm run dev'" }, expected_port: { type: "number" } }, required: ["command"] } } },
+  { type: "function", function: { name: "list_files", description: "List directory contents", parameters: { type: "object", properties: { path: { type: "string" }, recursive: { type: "boolean" } } } } },
   { type: "function", function: { name: "delete_file", description: "Delete a file or directory", parameters: { type: "object", properties: { path: { type: "string" }, recursive: { type: "boolean" } }, required: ["path"] } } },
   { type: "function", function: { name: "search_files", description: "Search for text in files using grep", parameters: { type: "object", properties: { pattern: { type: "string" }, path: { type: "string" }, file_pattern: { type: "string" } }, required: ["pattern"] } } },
   { type: "function", function: { name: "create_directory", description: "Create a directory", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } },
   { type: "function", function: { name: "move_file", description: "Move or rename a file", parameters: { type: "object", properties: { from: { type: "string" }, to: { type: "string" } }, required: ["from", "to"] } } },
-  { type: "function", function: { name: "get_project_info", description: "Get workspace/project overview", parameters: { type: "object", properties: {} } } },
+  { type: "function", function: { name: "get_project_info", description: "Get workspace overview: file count, package.json, README", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "web_search", description: "Search the web for docs, solutions, packages", parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } } },
 ];
 
-const SYSTEM_PROMPT = `You are APEX, an elite AI coding platform with multi-agent capabilities (Architect, Coder, Security, Reviewer). You have MCP-level secure sandbox access to files, terminal, and the web.
+const SYSTEM_PROMPT = `You are APEX, an elite AI coding agent with full filesystem and terminal access to a sandboxed workspace.
 
-CRITICAL RULES:
-1. NORMAL CONVERSATION: If the user is just saying hello, asking a question, or discussing concepts, DO NOT use file creation or execution tools. Simply reply with text.
-2. CODING: ONLY write code or modify files when explicitly requested to build, write, or fix something.
-3. PEV WORKFLOW (Plan -> Execute -> Verify): When tasked with coding, you MUST self-organize using the following XML tags so the frontend can render Generative UI components:
+╔══════════════════════════════════════════════════════════════╗
+║  ABSOLUTE RULE: NEVER write code blocks in your text.       ║
+║  ALL code MUST go through write_file or edit_file tools.    ║
+║  Code in text response = WRONG. Always use tools for code.  ║
+╚══════════════════════════════════════════════════════════════╝
+
+WORKFLOW FORMAT — Use this structure for ALL coding tasks:
 
 <plan>
-List the step-by-step architectural plan before writing any code.
+Numbered list of what you'll do. Be specific and concise.
 </plan>
 
 <execute>
-Explain the files you are creating or the commands you are running.
+Brief description of what you're doing in this phase.
+Then make your tool calls.
 </execute>
 
 <verify>
-State how you will test or verify the code works (e.g., checking terminal output, linting, or asking the user to review).
+Show verification: command output, test results, or confirm what was created.
 </verify>
 
-Write clean, typed, production-ready code. Think step by step, and self-correct if a terminal command or file read fails.`;
+RULES:
+1. Pure conversation (greetings, questions, discussions) → reply naturally, no tags, no tools
+2. Any coding task → ALWAYS use <plan>/<execute>/<verify> tags
+3. NEVER show code in your text. Write ALL code via write_file/edit_file
+4. After creating files, always run commands to verify: npm install, npm run build, etc.
+5. For dev servers/apps that need to be viewed: use start_dev_server (gives live preview)
+6. Complete tasks FULLY. Don't stop at "you can now do X" — do X yourself
+7. If a command fails, read the error, fix the issue, and retry
 
-async function executeTool(name: string, args: any, workspace: string): Promise<string> {
+Code standards:
+- TypeScript: strict, proper types
+- React: functional components, hooks
+- CSS: Tailwind when available
+- Always include error handling
+- Write production-ready code`;
+
+async function executeTool(name: string, args: any, workspace: string, conversationId: string, emit: (e: string, d: any) => void): Promise<string> {
   switch (name) {
-    case "run_command": {
-      const { output, exitCode } = await runCommand(args.command, workspace);
-      return `[exit: ${exitCode}]\n${output}`.slice(0, 10000);
+    case "write_file": {
+      try {
+        const p = path.join(workspace, args.path);
+        await fs.mkdir(path.dirname(p), { recursive: true });
+        await fs.writeFile(p, args.content, "utf-8");
+        emit("file_changed", { path: args.path, action: "write", size: args.content.length });
+        return `✓ Written: ${args.path} (${args.content.length} chars)`;
+      } catch (e: any) { return `Error: ${e.message}`; }
+    }
+    case "edit_file": {
+      try {
+        const p = path.join(workspace, args.path);
+        let c = await fs.readFile(p, "utf-8");
+        if (!c.includes(args.old_str)) return `Error: Pattern not found in ${args.path}. The old_str must exactly match existing content.`;
+        await fs.writeFile(p, c.split(args.old_str).join(args.new_str), "utf-8");
+        emit("file_changed", { path: args.path, action: "edit" });
+        return `✓ Edited: ${args.path}`;
+      } catch (e: any) { return `Error: ${e.message}`; }
+    }
+    case "patch_file": {
+      try {
+        const p = path.join(workspace, args.path);
+        let c = await fs.readFile(p, "utf-8");
+        const errors: string[] = [];
+        for (const patch of args.patches) {
+          if (!c.includes(patch.old_str)) { errors.push(`Not found: "${patch.old_str.slice(0, 40)}"`); continue; }
+          c = c.split(patch.old_str).join(patch.new_str);
+        }
+        await fs.writeFile(p, c, "utf-8");
+        emit("file_changed", { path: args.path, action: "edit" });
+        return errors.length ? `⚠ Partial patch: ${errors.join("; ")}` : `✓ Patched: ${args.path} (${args.patches.length} changes)`;
+      } catch (e: any) { return `Error: ${e.message}`; }
     }
     case "read_file": {
       try {
@@ -174,135 +249,107 @@ async function executeTool(name: string, args: any, workspace: string): Promise<
           const lines = c.split("\n");
           c = lines.slice((args.start_line || 1) - 1, args.end_line || lines.length).join("\n");
         }
-        return c.length > 8000 ? c.slice(0, 8000) + "\n...[truncated]" : c;
-      } catch (e: any) { return `Error: ${e.message}`; }
+        return c.length > 10000 ? c.slice(0, 10000) + "\n...[truncated]" : c;
+      } catch (e: any) { return `Error reading ${args.path}: ${e.message}`; }
     }
-    case "write_file": {
-      try {
-        const p = path.join(workspace, args.path);
-        await fs.mkdir(path.dirname(p), { recursive: true });
-        await fs.writeFile(p, args.content, "utf-8");
-        return `✓ Written: ${args.path} (${args.content.length} chars)`;
-      } catch (e: any) { return `Error: ${e.message}`; }
+    case "run_command": {
+      const timeout = (args.timeout_seconds || 120) * 1000;
+      const { output, exitCode } = await runCommand(args.command, workspace, timeout);
+      return `[exit: ${exitCode}]\n${output}`.slice(0, 12000);
     }
-    case "edit_file": {
-      try {
-        const p = path.join(workspace, args.path);
-        let c = await fs.readFile(p, "utf-8");
-        if (!c.includes(args.old_str)) return `Error: Pattern not found in ${args.path}`;
-        // Replace all occurrences
-        await fs.writeFile(p, c.split(args.old_str).join(args.new_str), "utf-8");
-        return `✓ Edited: ${args.path}`;
-      } catch (e: any) { return `Error: ${e.message}`; }
+    case "start_dev_server": {
+      const existing = devServers.get(conversationId);
+      if (existing) { try { existing.process.kill("SIGTERM"); } catch {} devServers.delete(conversationId); }
+      const port = args.expected_port || nextPort++;
+      if (nextPort > 4999) nextPort = 4000;
+      let cmd = args.command;
+      if (!cmd.includes("--port") && !cmd.includes("-p ")) {
+        if (cmd.match(/npm run (dev|start)/)) cmd = cmd.replace(/npm run (\w+)/, `npm run $1 -- --port ${port}`);
+        else if (cmd.includes("vite")) cmd += ` --port ${port}`;
+        else if (cmd.match(/flask|uvicorn|fastapi/)) cmd += ` --port ${port}`;
+        else cmd = `PORT=${port} ${cmd}`;
+      }
+      const proc = spawn("bash", ["-c", cmd], { cwd: workspace, env: { ...process.env, PORT: String(port) } });
+      proc.stdout?.on("data", (d: any) => emit("terminal_data", { data: d.toString() }));
+      proc.stderr?.on("data", (d: any) => emit("terminal_data", { data: d.toString() }));
+      devServers.set(conversationId, { port, process: proc, url: `/preview/${conversationId}/` });
+      const ready = await waitForPort(port, 30000);
+      if (ready) {
+        const previewUrl = `/preview/${conversationId}/`;
+        emit("preview_ready", { url: previewUrl, port });
+        return `✓ Dev server running on port ${port}. Preview URL: ${previewUrl}`;
+      }
+      return `⚠ Server started but port ${port} not ready after 30s. Check terminal output for errors.`;
     }
     case "list_files": {
       const items = await listDirectory(workspace, args.path || "");
       if (args.recursive) {
-        const flatten = (items: any[], prefix = ""): string[] =>
-          items.flatMap((i) => i.type === "directory" ? [`📁 ${prefix + i.name}/`, ...flatten(i.children || [], prefix + i.name + "/")] : [`📄 ${prefix + i.name}`]);
-        return flatten(items).join("\n") || "(empty)";
+        const flat = (items: any[], pre = ""): string[] => items.flatMap((i: any) => i.type === "directory" ? [`📁 ${pre + i.name}/`, ...flat(i.children || [], pre + i.name + "/")] : [`  ${pre + i.name}`]);
+        return flat(items).join("\n") || "(empty)";
       }
-      return items.map((i) => `${i.type === "directory" ? "📁" : "📄"} ${i.name}`).join("\n") || "(empty)";
+      return items.map((i: any) => `${i.type === "directory" ? "📁" : "  "} ${i.name}`).join("\n") || "(empty)";
     }
     case "delete_file": {
-      try { await fs.rm(path.join(workspace, args.path), { recursive: !!args.recursive, force: true }); return `✓ Deleted: ${args.path}`; }
+      try { await fs.rm(path.join(workspace, args.path), { recursive: !!args.recursive, force: true }); emit("file_changed", { path: args.path, action: "delete" }); return `✓ Deleted: ${args.path}`; }
       catch (e: any) { return `Error: ${e.message}`; }
     }
     case "search_files": {
       const sp = args.path ? path.join(workspace, args.path) : workspace;
       const fa = args.file_pattern ? `--include="${args.file_pattern}"` : "";
-      const { output } = await runCommand(`grep -rn ${fa} "${args.pattern}" . 2>/dev/null | head -50`, sp);
-      return output || "No matches found";
+      const { output } = await runCommand(`grep -rn ${fa} "${args.pattern.replace(/"/g, '\\"')}" . 2>/dev/null | head -60`, sp);
+      return output.trim() || "No matches found";
     }
     case "create_directory": {
       try { await fs.mkdir(path.join(workspace, args.path), { recursive: true }); return `✓ Created: ${args.path}`; }
       catch (e: any) { return `Error: ${e.message}`; }
     }
     case "move_file": {
-      try { await fs.rename(path.join(workspace, args.from), path.join(workspace, args.to)); return `✓ Moved: ${args.from} → ${args.to}`; }
+      try { await fs.rename(path.join(workspace, args.from), path.join(workspace, args.to)); emit("file_changed", { path: args.to, action: "write" }); return `✓ Moved: ${args.from} → ${args.to}`; }
       catch (e: any) { return `Error: ${e.message}`; }
     }
     case "get_project_info": {
       let info = "";
-      try {
-        const pkg = JSON.parse(await fs.readFile(path.join(workspace, "package.json"), "utf-8"));
-        info += `Project: ${pkg.name} v${pkg.version}\nDeps: ${Object.keys(pkg.dependencies || {}).join(", ")}\n`;
-      } catch {}
+      try { const pkg = JSON.parse(await fs.readFile(path.join(workspace, "package.json"), "utf-8")); info += `📦 ${pkg.name} v${pkg.version}\nScripts: ${Object.keys(pkg.scripts || {}).join(", ")}\nDeps: ${Object.keys(pkg.dependencies || {}).slice(0, 15).join(", ")}\n`; } catch {}
+      try { info += `\nREADME:\n${(await fs.readFile(path.join(workspace, "README.md"), "utf-8")).slice(0, 400)}`; } catch {}
       const { output } = await runCommand("find . -type f | grep -v node_modules | grep -v .git | wc -l", workspace);
-      info += `Files: ${output.trim()}`;
+      info += `\nTotal files: ${output.trim()}`;
       return info || "Empty workspace";
     }
     case "web_search": {
       try {
-        const { output } = await runCommand(
-          `curl -sL "https://api.duckduckgo.com/?q=${encodeURIComponent(args.query)}&format=json&no_html=1&skip_disambig=1" 2>/dev/null`,
-          workspace, 15000
-        );
+        const { output } = await runCommand(`curl -sL "https://api.duckduckgo.com/?q=${encodeURIComponent(args.query)}&format=json&no_html=1&skip_disambig=1" 2>/dev/null`, workspace, 15000);
         const d = JSON.parse(output);
-        const results = [
-          d.AbstractText,
-          d.Answer,
-          ...(d.RelatedTopics || []).slice(0, 5).map((t: any) => t.Text),
-        ].filter(Boolean);
-        if (results.length > 0) return results.join("\n\n");
-        // Fallback: use curl to fetch a quick summary
-        return `No instant answer found for "${args.query}". Try using run_command with curl to fetch specific documentation URLs.`;
-      } catch { return "Search failed. Try run_command with curl for specific docs."; }
+        const results = [d.AbstractText, d.Answer, ...(d.RelatedTopics || []).slice(0, 5).map((t: any) => t.Text)].filter(Boolean);
+        return results.length > 0 ? results.join("\n\n") : `No instant answer for "${args.query}".`;
+      } catch { return "Search failed."; }
     }
     default: return `Unknown tool: ${name}`;
   }
 }
 
-// --- API Routes ---
-app.get("/api/health", (_, res) => res.json({ status: "ok", version: "2.0.0", provider: "groq" }));
-app.get("/api/test-groq", async (_, res) => {
-  try {
-    const client = getGroqClient();
-    const result = await client.chat.completions.create({
-      model: "llama-3.1-8b-instant",
-      messages: [{ role: "user", content: "Say OK" }],
-      max_tokens: 10,
-    });
-    res.json({ ok: true, reply: result.choices[0]?.message?.content });
-  } catch (e: any) {
-    res.json({ ok: false, error: e.message });
-  }
-});
+// API
+app.get("/api/health", (_, res) => res.json({ status: "ok", version: "3.0.0" }));
 app.get("/api/skills", (_, res) => res.json(Object.entries(SKILLS).map(([id, s]) => ({ id, ...s }))));
 app.get("/api/models", (_, res) => res.json(GROQ_MODELS));
-app.get("/api/settings", (_, res) => res.json({ has_groq_key: !!process.env.GROQ_API_KEY, provider: "groq" }));
-
+app.get("/api/settings", (_, res) => res.json({ has_groq_key: !!process.env.GROQ_API_KEY }));
 app.get("/api/conversations", (_, res) => {
-  const result = Object.values(conversationsDB)
-    .sort((a: any, b: any) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
-    .map(({ messages, ...meta }: any) => meta);
+  const result = Object.values(conversationsDB).sort((a: any, b: any) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()).map(({ messages, ...meta }: any) => meta);
   res.json(result);
 });
 app.post("/api/conversations", async (req, res) => {
   const id = uuidv4();
-  const conv = { id, title: req.body.title || "New Conversation", created_at: new Date().toISOString(), updated_at: new Date().toISOString(), status: "idle", message_count: 0, model: req.body.model || "llama-3.3-70b-versatile", messages: [], pinned: false, tags: [] };
-  conversationsDB[id] = conv;
-  await ensureWorkspace(id); await saveConversations(conversationsDB);
-  res.json(conv);
+  const conv = { id, title: req.body.title || "New Project", created_at: new Date().toISOString(), updated_at: new Date().toISOString(), status: "idle", message_count: 0, model: req.body.model || "llama-3.3-70b-versatile", messages: [], pinned: false };
+  conversationsDB[id] = conv; await ensureWorkspace(id); await saveConversations(conversationsDB); res.json(conv);
 });
-app.get("/api/conversations/:id", (req, res) => {
-  const c = conversationsDB[req.params.id];
-  if (!c) return res.status(404).json({ error: "Not found" });
-  res.json(c);
-});
-app.patch("/api/conversations/:id", async (req, res) => {
-  const c = conversationsDB[req.params.id];
-  if (!c) return res.status(404).json({ error: "Not found" });
-  Object.assign(c, req.body); await saveConversations(conversationsDB); res.json(c);
-});
+app.get("/api/conversations/:id", (req, res) => { const c = conversationsDB[req.params.id]; if (!c) return res.status(404).json({ error: "Not found" }); res.json(c); });
+app.patch("/api/conversations/:id", async (req, res) => { const c = conversationsDB[req.params.id]; if (!c) return res.status(404).json({ error: "Not found" }); Object.assign(c, req.body); await saveConversations(conversationsDB); res.json(c); });
 app.delete("/api/conversations/:id", async (req, res) => {
+  const ds = devServers.get(req.params.id); if (ds) { try { ds.process.kill(); } catch {} devServers.delete(req.params.id); }
   delete conversationsDB[req.params.id]; await saveConversations(conversationsDB);
   try { await fs.rm(getWorkspace(req.params.id), { recursive: true, force: true }); } catch {}
   res.json({ success: true });
 });
-app.get("/api/conversations/:id/files", async (req, res) => {
-  res.json(await listDirectory(getWorkspace(req.params.id), (req.query.path as string) || ""));
-});
+app.get("/api/conversations/:id/files", async (req, res) => res.json(await listDirectory(getWorkspace(req.params.id), (req.query.path as string) || "")));
 app.get("/api/conversations/:id/files/content", async (req, res) => {
   try { res.json({ content: await fs.readFile(path.join(getWorkspace(req.params.id), req.query.path as string), "utf-8") }); }
   catch { res.status(500).json({ error: "Cannot read file" }); }
@@ -310,7 +357,8 @@ app.get("/api/conversations/:id/files/content", async (req, res) => {
 app.post("/api/conversations/:id/files/write", async (req, res) => {
   try {
     const p = path.join(getWorkspace(req.params.id), req.body.path);
-    await fs.mkdir(path.dirname(p), { recursive: true }); await fs.writeFile(p, req.body.content, "utf-8"); res.json({ success: true });
+    await fs.mkdir(path.dirname(p), { recursive: true }); await fs.writeFile(p, req.body.content, "utf-8");
+    io.to(req.params.id).emit("file_changed", { path: req.body.path, action: "write" }); res.json({ success: true });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 app.delete("/api/conversations/:id/files", async (req, res) => {
@@ -323,15 +371,18 @@ app.post("/api/terminal/run", async (req, res) => {
   res.json({ output, exitCode });
 });
 
-// Track active agent loops per conversation so they can be cancelled
 const activeAgentLoops: Map<string, boolean> = new Map();
 
-// --- Socket ---
 io.on("connection", (socket) => {
-  socket.on("join_conversation", ({ conversation_id }) => { socket.join(conversation_id); socket.emit("joined", { conversation_id }); });
+  socket.on("join_conversation", ({ conversation_id }) => {
+    socket.join(conversation_id);
+    const ds = devServers.get(conversation_id);
+    if (ds) socket.emit("preview_ready", { url: ds.url, port: ds.port });
+    socket.emit("joined", { conversation_id });
+  });
 
   socket.on("stop_agent", ({ conversation_id }) => {
-    activeAgentLoops.set(conversation_id, false); // signal stop
+    activeAgentLoops.set(conversation_id, false);
     io.to(conversation_id).emit("agent_status", { status: "idle" });
   });
 
@@ -343,9 +394,8 @@ io.on("connection", (socket) => {
   });
 
   socket.on("send_message", async ({ conversation_id, content, model }) => {
-    console.log(`[Server] send_message received. conv=${conversation_id} model=${model} content="${content?.slice(0,60)}"`);
     if (!conversationsDB[conversation_id]) {
-      conversationsDB[conversation_id] = { id: conversation_id, title: content.slice(0, 60), created_at: new Date().toISOString(), updated_at: new Date().toISOString(), status: "running", message_count: 0, messages: [], model: model || "llama-3.3-70b-versatile", pinned: false, tags: [] };
+      conversationsDB[conversation_id] = { id: conversation_id, title: content.slice(0, 60), created_at: new Date().toISOString(), updated_at: new Date().toISOString(), status: "running", message_count: 0, messages: [], model: model || "llama-3.3-70b-versatile", pinned: false };
     }
     const conv = conversationsDB[conversation_id];
     const selectedModel = model || conv.model || "llama-3.3-70b-versatile";
@@ -354,19 +404,18 @@ io.on("connection", (socket) => {
     io.to(conversation_id).emit("agent_status", { status: "running" });
     const assistantId = uuidv4();
     io.to(conversation_id).emit("message_start", { id: assistantId, role: "assistant", timestamp: new Date().toISOString() });
-
-    const history: any[] = [{ role: "system", content: SYSTEM_PROMPT }, ...conv.messages.slice(-20).map((m: any) => ({ role: m.role, content: m.content }))];
+    const history: any[] = [{ role: "system", content: SYSTEM_PROMPT }, ...conv.messages.slice(-30).map((m: any) => ({ role: m.role, content: m.content }))];
     const workspace = await ensureWorkspace(conversation_id);
     let fullResponse = "";
+    const emit = (e: string, d: any) => io.to(conversation_id).emit(e, d);
 
     try {
       const client = getGroqClient();
-      console.log(`[Server] Groq client ready. Starting agent loop for conv=${conversation_id} model=${selectedModel}`);
       activeAgentLoops.set(conversation_id, true);
       let loops = 0;
-      while (loops++ < 12) {
-        if (!activeAgentLoops.get(conversation_id)) break; // stopped by user
-        const stream = await (client.chat.completions.create as any)({ model: selectedModel, messages: history, tools: TOOLS, tool_choice: "auto", stream: true, temperature: 0.3 });
+      while (loops++ < 20) {
+        if (!activeAgentLoops.get(conversation_id)) break;
+        const stream = await (client.chat.completions.create as any)({ model: selectedModel, messages: history, tools: TOOLS, tool_choice: "auto", stream: true, temperature: 0.2, max_tokens: 8000 });
         let currentContent = ""; let toolCalls: any[] = [];
         for await (const chunk of stream as AsyncIterable<any>) {
           const delta = (chunk as any).choices[0]?.delta;
@@ -383,29 +432,25 @@ io.on("connection", (socket) => {
           }
         }
         if (toolCalls.length > 0) {
-          // When tool_calls are present, push a single assistant message with both content and tool_calls
-          const atm: any = { role: "assistant", tool_calls: toolCalls.map((tc) => ({ id: tc.id, type: "function", function: tc.function })) };
+          const atm: any = { role: "assistant", tool_calls: toolCalls.map(tc => ({ id: tc.id, type: "function", function: tc.function })) };
           if (currentContent) atm.content = currentContent;
           history.push(atm);
           for (const tc of toolCalls) {
-            const name = tc.function.name; let args: any = {};
+            const tname = tc.function.name; let args: any = {};
             try { args = JSON.parse(tc.function.arguments); } catch {}
-            io.to(conversation_id).emit("tool_use", { tool: name, args, timestamp: new Date().toISOString() });
-            const result = await executeTool(name, args, workspace);
-            io.to(conversation_id).emit("tool_result", { tool: name, result, timestamp: new Date().toISOString() });
+            io.to(conversation_id).emit("tool_use", { tool: tname, args, timestamp: new Date().toISOString() });
+            const result = await executeTool(tname, args, workspace, conversation_id, emit);
+            io.to(conversation_id).emit("tool_result", { tool: tname, result, args, timestamp: new Date().toISOString() });
             history.push({ role: "tool", tool_call_id: tc.id, content: result });
           }
           continue;
         }
-        // No tool calls — push the text response and stop the loop
         if (currentContent) history.push({ role: "assistant", content: currentContent });
         break;
       }
     } catch (e: any) {
-      const msg = e.message || "Error";
-      console.error(`[Server] ❌ Agent error for conv=${conversation_id}:`, e);
-      io.to(conversation_id).emit("agent_error", { message: msg });
-      fullResponse += `\n\n⚠️ Error: ${msg}`;
+      io.to(conversation_id).emit("agent_error", { message: e.message });
+      fullResponse += `\n\n⚠️ **Error:** ${e.message}`;
     }
 
     conv.messages.push({ id: assistantId, role: "assistant", content: fullResponse, timestamp: new Date().toISOString() });
@@ -427,4 +472,4 @@ if (process.env.NODE_ENV !== "production") {
   app.get("*", (req, res) => res.sendFile(path.join(distPath, "index.html")));
 }
 
-httpServer.listen(PORT, "0.0.0.0", () => console.log(`\n🚀 APEX Agent → http://localhost:${PORT}\n`));
+httpServer.listen(PORT, "0.0.0.0", () => console.log(`\n🚀 APEX v3 → http://localhost:${PORT}\n`));
