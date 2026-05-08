@@ -1,9 +1,9 @@
 import React from "react";
 import {
-  Send, Square, Bot, User, ChevronDown, ChevronRight,
+  Send, Square, Bot, ChevronDown, ChevronRight,
   Terminal as TerminalIcon, FileText, Search,
-  Globe, FolderOpen, Pencil, Trash2, Move, ChevronUp, Zap, CheckCircle2,
-  ListTodo, Hammer, ShieldCheck
+  Globe, FolderOpen, Pencil, Trash2, Move, Zap,
+  CheckCircle2, Copy, Check, Play, ListTodo, Hammer, ShieldCheck, AlertCircle
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -23,12 +23,65 @@ const TOOL_ICONS: Record<string, any> = {
   move_file: Move, get_project_info: Bot, web_search: Globe,
 };
 const TOOL_COLORS: Record<string, string> = {
-  run_command: "var(--color-yellow)", read_file: "var(--color-cyan)", write_file: "var(--color-green)",
-  edit_file: "var(--color-purple)", list_files: "var(--color-cyan)", delete_file: "var(--color-red)",
-  search_files: "var(--color-cyan)", web_search: "var(--color-cyan)", create_directory: "var(--color-green)",
-  move_file: "var(--color-yellow)", get_project_info: "var(--color-purple)",
+  run_command: "#fbbf24", read_file: "#38bdf8", write_file: "#4ade80",
+  edit_file: "#a78bfa", list_files: "#38bdf8", delete_file: "#f87171",
+  search_files: "#38bdf8", web_search: "#38bdf8", create_directory: "#4ade80",
+  move_file: "#fbbf24", get_project_info: "#a78bfa",
 };
 
+// ─── Code block with copy + lang badge ──────────────────────────────────────
+function CodeBlock({ children, className }: { children: string; className?: string }) {
+  const [copied, setCopied] = React.useState(false);
+  const lang = className?.replace("language-", "") || "text";
+
+  const copy = async () => {
+    await navigator.clipboard.writeText(children);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="code-block-wrapper">
+      <div className="code-block-header">
+        <span className="code-lang">{lang}</span>
+        <button onClick={copy} className="code-copy-btn">
+          {copied ? <Check size={12} /> : <Copy size={12} />}
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
+      <pre className="code-block-pre">
+        <code>{children}</code>
+      </pre>
+    </div>
+  );
+}
+
+// ─── Markdown renderer with proper code blocks ───────────────────────────────
+function MarkdownContent({ content }: { content: string }) {
+  return (
+    <div className="markdown-body">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm, remarkBreaks]}
+        components={{
+          code({ node, className, children, ...props }: any) {
+            const isInline = !className;
+            if (isInline) {
+              return <code className="inline-code" {...props}>{children}</code>;
+            }
+            return <CodeBlock className={className}>{String(children).replace(/\n$/, "")}</CodeBlock>;
+          },
+          pre({ children }: any) {
+            return <>{children}</>;
+          },
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
+// ─── Main component ───────────────────────────────────────────────────────────
 export default function ChatInterface({ conversationId }: { conversationId: string }) {
   const [input, setInput] = React.useState("");
   const inputRef = React.useRef("");
@@ -69,24 +122,13 @@ export default function ChatInterface({ conversationId }: { conversationId: stri
     setAtBottom(scrollHeight - scrollTop - clientHeight < 60);
   };
 
-  const stop = () => {
-    getSocket().emit("stop_agent", { conversation_id: conversationId });
-  };
+  const stop = () => getSocket().emit("stop_agent", { conversation_id: conversationId });
 
   const send = () => {
     const text = inputRef.current.trim();
-    console.log("[ChatInterface] send() called. text:", JSON.stringify(text), "| statusRef:", statusRef.current);
-    if (!text) { console.warn("[ChatInterface] Blocked: empty input"); return; }
-    if (statusRef.current === "running") { console.warn("[ChatInterface] Blocked: already running"); toast.error("Agent is busy, please wait..."); return; }
-
-    const userMsg = {
-      id: `user-${Date.now()}`,
-      role: "user" as const,
-      content: text,
-      timestamp: new Date().toISOString(),
-    };
-    addMessage(userMsg);
-    console.log("[ChatInterface] Calling sendAgentMessage with:", { conversationId, text, selectedModel });
+    if (!text) return;
+    if (statusRef.current === "running") { toast.error("Agent is busy, please wait..."); return; }
+    addMessage({ id: `user-${Date.now()}`, role: "user" as const, content: text, timestamp: new Date().toISOString() });
     sendAgentMessage(conversationId, text, selectedModel);
     inputRef.current = "";
     setInput("");
@@ -94,41 +136,44 @@ export default function ChatInterface({ conversationId }: { conversationId: stri
   };
 
   const handleKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      send();
-    }
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   };
 
   const isRunning = status === "running";
   const hasInput = input.trim().length > 0;
   const currentModel = models.find((m) => m.id === selectedModel);
-  const displayName = currentModel?.name ?? selectedModel;
+  const displayName = currentModel?.name ?? (selectedModel?.split("/").pop() ?? "Model");
 
   const allItems = React.useMemo(() => {
     const msgs = messages.map((m) => ({ ...m, _type: "message" as const }));
-    const tools = toolEvents.map((t) => ({ ...t, id: `${t.tool}-${t.timestamp}`, role: "tool" as const, content: t.result || JSON.stringify(t.args), _type: "tool" as const }));
+    const tools = toolEvents.map((t) => ({
+      ...t, id: `${t.tool}-${t.timestamp}`, role: "tool" as const,
+      content: t.result || JSON.stringify(t.args), _type: "tool" as const,
+    }));
     return [...msgs, ...tools].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
   }, [messages, toolEvents]);
 
   return (
     <div className="flex flex-col h-full" style={{ background: "var(--color-bg)" }}>
       {/* Header */}
-      <div className="h-14 flex items-center px-5 gap-3 border-b flex-shrink-0"
-        style={{ borderColor: "var(--color-border)", background: "var(--color-bg)" }}>
-        <div 
-          className={cn("w-2 h-2 rounded-full flex-shrink-0 transition-all", isRunning ? "bg-green-500 animate-pulse" : "bg-gray-600")} 
-          style={{ boxShadow: isRunning ? "0 0 8px rgba(74,222,128,0.6)" : "none" }}
-        />
-        <span className="text-sm font-semibold tracking-tight text-white">APEX Workspace</span>
+      <div className="chat-header">
+        <div className={cn("status-dot", isRunning && "status-dot--running")} />
+        <span className="chat-header-title">APEX</span>
+        {isRunning && (
+          <motion.div initial={{ opacity: 0, x: -4 }} animate={{ opacity: 1, x: 0 }}
+            className="flex items-center gap-1.5 text-xs font-mono" style={{ color: "var(--color-yellow)" }}>
+            <span className="thinking-dots">thinking</span>
+          </motion.div>
+        )}
       </div>
 
       {/* Messages */}
-      <div ref={scrollRef} onScroll={handleScroll}
-        className="flex-1 overflow-y-auto px-5 py-6 flex flex-col gap-6">
+      <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto px-4 py-5 flex flex-col gap-4">
         {allItems.length === 0 ? (
-          <div className="flex-1 flex flex-col items-center justify-center gap-4 opacity-50 py-20">
-            <Bot size={48} className="text-zinc-600" />
+          <div className="flex-1 flex flex-col items-center justify-center gap-3 py-20 opacity-40">
+            <div className="w-12 h-12 rounded-2xl flex items-center justify-center" style={{ background: "var(--color-surface2)", border: "1px solid var(--color-border)" }}>
+              <Zap size={22} style={{ color: "var(--color-cyan)" }} />
+            </div>
             <p className="text-sm font-medium">What are we building today?</p>
           </div>
         ) : (
@@ -140,11 +185,9 @@ export default function ChatInterface({ conversationId }: { conversationId: stri
         )}
       </div>
 
-      {/* Input area */}
-      <div className="flex-shrink-0 p-4 pt-2" style={{ background: "var(--color-bg)" }}>
-        <div className="relative rounded-2xl overflow-visible transition-all duration-200"
-          style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", boxShadow: "0 4px 20px rgba(0,0,0,0.2)" }}>
-          
+      {/* Input */}
+      <div className="flex-shrink-0 p-3" style={{ background: "var(--color-bg)" }}>
+        <div className="input-shell">
           <textarea
             ref={textRef}
             value={input}
@@ -157,203 +200,199 @@ export default function ChatInterface({ conversationId }: { conversationId: stri
             onKeyDown={handleKey}
             placeholder="Ask APEX to build, debug, or explore..."
             rows={1}
-            className="w-full bg-transparent text-[15px] resize-none outline-none py-4 px-4 pb-12"
-            style={{ color: "var(--color-text)", maxHeight: 200, lineHeight: 1.5 }}
+            className="input-textarea"
           />
-
-          {/* Bottom Toolbar inside the input box */}
-          <div className="absolute bottom-2 right-2 left-2 flex items-center justify-between">
-            {/* Model picker popup & button */}
-            <div className="relative">
+          <div className="input-toolbar">
+            {/* Model picker */}
+            <div className="relative" ref={pickerRef}>
               <AnimatePresence>
                 {modelPickerOpen && (
                   <motion.div
-                    ref={pickerRef}
-                    initial={{ opacity: 0, y: 10, scale: 0.98 }}
+                    initial={{ opacity: 0, y: 8, scale: 0.97 }}
                     animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={{ opacity: 0, y: 10, scale: 0.98 }}
-                    transition={{ duration: 0.15 }}
-                    className="absolute left-0 bottom-full mb-2 rounded-2xl overflow-hidden z-50 w-[300px]"
-                    style={{ background: "var(--color-surface2)", border: "1px solid var(--color-border2)", boxShadow: "0 -8px 40px rgba(0,0,0,0.5)" }}
+                    exit={{ opacity: 0, y: 8, scale: 0.97 }}
+                    transition={{ duration: 0.13 }}
+                    className="model-picker"
                   >
-                    <div className="p-2 overflow-y-auto" style={{ maxHeight: 260 }}>
-                      {models.map((m) => (
-                        <button
-                          key={m.id}
-                          onPointerDown={(e) => { e.preventDefault(); setSelectedModel(m.id); setModelPickerOpen(false); }}
-                          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left hover:bg-zinc-700/30 transition-colors"
-                        >
-                          <div className="flex-1 min-w-0">
-                            <span className="text-sm font-medium" style={{ color: selectedModel === m.id ? "white" : "var(--color-text)" }}>
-                              {m.name}
-                            </span>
+                    {models.map((m) => (
+                      <button
+                        key={m.id}
+                        onPointerDown={(e) => { e.preventDefault(); setSelectedModel(m.id); setModelPickerOpen(false); }}
+                        className={cn("model-picker-item", selectedModel === m.id && "model-picker-item--active")}
+                      >
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium truncate">{m.name}</span>
+                            {m.recommended && <span className="model-badge model-badge--recommended">★ best</span>}
+                            {m.fast && <span className="model-badge model-badge--fast">⚡ fast</span>}
+                            {m.audio && <span className="model-badge model-badge--audio">🎙 audio</span>}
                           </div>
-                          {selectedModel === m.id && <CheckCircle2 size={14} className="text-blue-500 flex-shrink-0" />}
-                        </button>
-                      ))}
-                    </div>
+                          <p className="text-xs mt-0.5 truncate" style={{ color: "var(--color-muted)" }}>{m.description}</p>
+                        </div>
+                        {selectedModel === m.id && <CheckCircle2 size={14} style={{ color: "var(--color-cyan)", flexShrink: 0 }} />}
+                      </button>
+                    ))}
                   </motion.div>
                 )}
               </AnimatePresence>
-
               <button
                 type="button"
                 onPointerDown={(e) => { e.preventDefault(); setModelPickerOpen((v) => !v); }}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium hover:bg-zinc-800/50 transition-colors"
-                style={{ color: "var(--color-muted)" }}
+                className="model-trigger"
               >
-                <span className="truncate max-w-[150px]">{displayName}</span>
-                {modelPickerOpen ? <ChevronDown size={12} /> : <ChevronUp size={12} />}
+                <span className="truncate max-w-[140px] text-xs">{displayName}</span>
+                <ChevronDown size={11} style={{ transform: modelPickerOpen ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
               </button>
             </div>
 
-            {/* Send button */}
+            {/* Send / Stop */}
             <button
               type="button"
-              onPointerDown={(e) => { e.preventDefault(); if (isRunning) { stop(); } else { send(); } }}
-              className="w-8 h-8 rounded-full flex items-center justify-center transition-all shadow-sm"
-              style={{
-                background: hasInput && !isRunning ? "var(--color-text)" : "var(--color-surface3)",
-                color: hasInput && !isRunning ? "#000" : "var(--color-muted)",
-                cursor: hasInput && !isRunning ? "pointer" : "default",
-              }}
+              onPointerDown={(e) => { e.preventDefault(); if (isRunning) stop(); else send(); }}
+              className={cn("send-btn", (hasInput || isRunning) && "send-btn--active")}
             >
-              {isRunning ? <Square size={12} /> : <ArrowUpIcon size={14} strokeWidth={3} />}
+              {isRunning ? <Square size={11} fill="currentColor" /> : <ArrowUp size={14} />}
             </button>
           </div>
         </div>
+        <p className="text-center text-xs mt-2" style={{ color: "var(--color-faint)" }}>
+          Shift+Enter for new line · Enter to send
+        </p>
       </div>
     </div>
   );
 }
 
-// Subcomponent replacing Send with Lovable's up arrow
-function ArrowUpIcon({ size, strokeWidth }: { size: number, strokeWidth: number }) {
+function ArrowUp({ size }: { size: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
       <path d="M12 19V5M5 12l7-7 7 7" />
     </svg>
   );
 }
 
-// ---- Generative UI / Message Parser ----
+// ─── Generative UI parser ────────────────────────────────────────────────────
 function parseGenerativeUI(content: string) {
-  const parts = [];
+  const parts: { type: string; content: string }[] = [];
   const regex = /(<plan>[\s\S]*?<\/plan>|<execute>[\s\S]*?<\/execute>|<verify>[\s\S]*?<\/verify>)/gi;
-  let lastIdx = 0;
-  let match;
-
+  let lastIdx = 0, match;
   while ((match = regex.exec(content)) !== null) {
     if (match.index > lastIdx) parts.push({ type: "text", content: content.slice(lastIdx, match.index) });
-    
-    const tagMatch = match[0];
-    if (tagMatch.startsWith("<plan>")) {
-      parts.push({ type: "plan", content: tagMatch.slice(6, -7).trim() });
-    } else if (tagMatch.startsWith("<execute>")) {
-      parts.push({ type: "execute", content: tagMatch.slice(9, -10).trim() });
-    } else if (tagMatch.startsWith("<verify>")) {
-      parts.push({ type: "verify", content: tagMatch.slice(8, -9).trim() });
-    }
+    if (match[0].startsWith("<plan>")) parts.push({ type: "plan", content: match[0].slice(6, -7).trim() });
+    else if (match[0].startsWith("<execute>")) parts.push({ type: "execute", content: match[0].slice(9, -10).trim() });
+    else if (match[0].startsWith("<verify>")) parts.push({ type: "verify", content: match[0].slice(8, -9).trim() });
     lastIdx = regex.lastIndex;
   }
   if (lastIdx < content.length) parts.push({ type: "text", content: content.slice(lastIdx) });
-
   return parts;
 }
 
+// ─── Message item ─────────────────────────────────────────────────────────────
 function MessageItem({ msg }: { msg: any }) {
   const isUser = msg.role === "user";
 
   if (isUser) {
     return (
-      <motion.div initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} className="flex justify-end mb-2">
-        <div className="max-w-[80%] rounded-3xl rounded-tr-sm px-5 py-3 text-[15px]"
-          style={{ background: "var(--color-surface2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}>
-          <p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>
-        </div>
+      <motion.div initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} className="flex justify-end">
+        <div className="user-bubble">{msg.content}</div>
       </motion.div>
     );
   }
 
-  // Agent Message with Generative UI
-  const parts = parseGenerativeUI(msg.content);
+  const parts = parseGenerativeUI(msg.content || "");
 
   return (
-    <motion.div initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} className="flex gap-4 max-w-[95%]">
-      <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 mt-1"
-        style={{ background: "var(--color-cyan)", color: "#000" }}>
-        <Bot size={16} />
+    <motion.div initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} className="flex gap-3">
+      <div className="agent-avatar">
+        <Zap size={14} style={{ color: "#000" }} />
       </div>
-      <div className="flex-1 min-w-0 pt-1.5">
+      <div className="flex-1 min-w-0 pt-1">
+        {msg.isStreaming && !msg.content && (
+          <div className="flex items-center gap-1.5 py-2">
+            <span className="streaming-dot" style={{ animationDelay: "0ms" }} />
+            <span className="streaming-dot" style={{ animationDelay: "150ms" }} />
+            <span className="streaming-dot" style={{ animationDelay: "300ms" }} />
+          </div>
+        )}
         {parts.map((p, i) => {
           if (p.type === "plan") return (
-            <div key={i} className="gen-ui-card">
-              <div className="gen-ui-header text-blue-400"><ListTodo size={14} /> Agent Plan</div>
-              <div className="prose prose-invert prose-sm max-w-none">
-                <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{p.content}</ReactMarkdown>
-              </div>
+            <div key={i} className="gen-card gen-card--plan">
+              <div className="gen-card-header"><ListTodo size={13} /> Agent Plan</div>
+              <MarkdownContent content={p.content} />
             </div>
           );
           if (p.type === "execute") return (
-            <div key={i} className="gen-ui-card">
-              <div className="gen-ui-header text-yellow-400"><Hammer size={14} /> Execution</div>
-              <div className="prose prose-invert prose-sm max-w-none">
-                <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{p.content}</ReactMarkdown>
-              </div>
+            <div key={i} className="gen-card gen-card--execute">
+              <div className="gen-card-header"><Hammer size={13} /> Execution</div>
+              <MarkdownContent content={p.content} />
             </div>
           );
           if (p.type === "verify") return (
-            <div key={i} className="gen-ui-card">
-              <div className="gen-ui-header text-green-400"><ShieldCheck size={14} /> Verification</div>
-              <div className="prose prose-invert prose-sm max-w-none">
-                <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{p.content}</ReactMarkdown>
-              </div>
+            <div key={i} className="gen-card gen-card--verify">
+              <div className="gen-card-header"><ShieldCheck size={13} /> Verification</div>
+              <MarkdownContent content={p.content} />
             </div>
           );
-          
-          return p.content ? (
-            <div key={i} className="prose prose-invert prose-sm max-w-none mb-3">
-              <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{p.content}</ReactMarkdown>
-            </div>
-          ) : null;
+          return p.content ? <MarkdownContent key={i} content={p.content} /> : null;
         })}
       </div>
     </motion.div>
   );
 }
 
-// ---- Tool event item ----
+// ─── Tool item ────────────────────────────────────────────────────────────────
 function ToolItem({ event }: { event: any }) {
   const [expanded, setExpanded] = React.useState(false);
   const Icon = TOOL_ICONS[event.tool] || Bot;
   const color = TOOL_COLORS[event.tool] || "var(--color-muted)";
   const isResult = event.type === "tool_result";
   const content = event.result || JSON.stringify(event.args, null, 2) || "";
-  const preview = content.split("\n").slice(0, 1).join("\n");
+  const isError = content.toLowerCase().startsWith("error");
+  const [copied, setCopied] = React.useState(false);
+
+  const copy = async () => {
+    await navigator.clipboard.writeText(content);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
 
   return (
-    <motion.div initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }}
-      className="ml-12 mr-8 rounded-xl overflow-hidden text-[13px] font-mono my-1"
-      style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}>
-      <button onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-zinc-800/50 transition-colors"
-        style={{ borderBottom: expanded ? "1px solid var(--color-border)" : "none" }}>
-        <Icon size={14} style={{ color, flexShrink: 0 }} />
-        <span style={{ color }}>{event.tool}</span>
-        {event.args?.command && <span className="ml-1 truncate text-zinc-500">{event.args.command}</span>}
-        {event.args?.path && <span className="ml-1 truncate text-zinc-500">{event.args.path}</span>}
-        <span className="ml-auto flex-shrink-0 text-zinc-600">{expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</span>
+    <motion.div
+      initial={{ opacity: 0, scale: 0.98 }}
+      animate={{ opacity: 1, scale: 1 }}
+      className="tool-card"
+      style={{ marginLeft: "2.5rem" }}
+    >
+      <button onClick={() => setExpanded(!expanded)} className="tool-card-header">
+        <Icon size={13} style={{ color, flexShrink: 0 }} />
+        <span className="tool-name" style={{ color }}>{event.tool}</span>
+        {event.args?.command && <span className="tool-arg">{event.args.command}</span>}
+        {event.args?.path && <span className="tool-arg">{event.args.path}</span>}
+        {event.args?.query && <span className="tool-arg">{event.args.query}</span>}
+        <div className="ml-auto flex items-center gap-2 flex-shrink-0">
+          {isResult && isError && <AlertCircle size={12} style={{ color: "var(--color-red)" }} />}
+          {isResult && !isError && <CheckCircle2 size={12} style={{ color: "var(--color-green)" }} />}
+          <ChevronRight size={12} style={{ color: "var(--color-muted)", transform: expanded ? "rotate(90deg)" : "none", transition: "transform 0.15s" }} />
+        </div>
       </button>
-      {expanded && (
-        <div className="px-3 py-2 overflow-x-auto text-zinc-400" style={{ maxHeight: 240, overflowY: "auto" }}>
-          <pre className="whitespace-pre-wrap break-all text-[12px]">{content}</pre>
-        </div>
-      )}
-      {!expanded && isResult && content && (
-        <div className="px-3 pb-2 pt-0.5 text-zinc-500">
-          <pre className="whitespace-pre-wrap break-all text-[11px] truncate opacity-80">{preview}</pre>
-        </div>
-      )}
+      <AnimatePresence>
+        {expanded && (
+          <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="overflow-hidden">
+            <div className="tool-card-body">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-mono" style={{ color: "var(--color-muted)" }}>
+                  {isResult ? "output" : "args"}
+                </span>
+                <button onClick={copy} className="flex items-center gap-1 text-xs" style={{ color: "var(--color-muted)" }}>
+                  {copied ? <Check size={11} /> : <Copy size={11} />}
+                  {copied ? "Copied" : "Copy"}
+                </button>
+              </div>
+              <pre className="tool-output">{content}</pre>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }
