@@ -27,7 +27,11 @@ for (const dir of [WORKSPACE_DIR, DATA_DIR]) {
 
 const app = express();
 const httpServer = createServer(app);
-const io = new Server(httpServer, { cors: { origin: "*", methods: ["GET", "POST"] } });
+const io = new Server(httpServer, {
+  cors: { origin: "*", methods: ["GET", "POST"] },
+  transports: ["polling", "websocket"],
+  allowEIO3: true,
+});
 app.use(express.json({ limit: "10mb" }));
 
 // --- Persistence ---
