@@ -39,17 +39,10 @@ export default function ConversationPage() {
     if (!id) return;
     setActiveConversationId(id);
     clearAll();
-    joinConversation(id);
-    getConversation(id).then((data) => {
-      data.messages?.forEach((msg: any) => addMessage(msg));
-      setTitle(data.title || "New Project");
-    });
-    const initialMsg = sessionStorage.getItem(`initial_msg_${id}`);
-    if (initialMsg) {
-      sendAgentMessage(id, initialMsg, selectedModel);
-      sessionStorage.removeItem(`initial_msg_${id}`);
-    }
+
     const socket = getSocket();
+
+    // 1. Register ALL listeners FIRST before doing anything else
     const onAgentStatus = ({ status }: any) => {
       console.log("[ConversationPage] agent_status:", status);
       setStatus(status);
@@ -85,6 +78,13 @@ export default function ConversationPage() {
     const onJoined = (data: any) => {
       console.log("[ConversationPage] joined room:", data);
       toast.success("Joined workspace room");
+      // 3. Send initial message ONLY after room is confirmed joined
+      const initialMsg = sessionStorage.getItem(`initial_msg_${id}`);
+      if (initialMsg) {
+        console.log("[ConversationPage] Sending initial message:", initialMsg.slice(0, 60));
+        sendAgentMessage(id, initialMsg, selectedModel);
+        sessionStorage.removeItem(`initial_msg_${id}`);
+      }
     };
 
     socket.on("joined", onJoined);
@@ -95,6 +95,14 @@ export default function ConversationPage() {
     socket.on("tool_use", onToolUse);
     socket.on("tool_result", onToolResult);
     socket.on("agent_error", onError);
+
+    // 2. Load history and join room AFTER listeners are set up
+    getConversation(id).then((data) => {
+      data.messages?.forEach((msg: any) => addMessage(msg));
+      setTitle(data.title || "New Project");
+    });
+    joinConversation(id);
+
     return () => {
       socket.off("joined", onJoined);
       socket.off("agent_status", onAgentStatus);
