@@ -5,8 +5,21 @@ let socket: Socket;
 
 export function getSocket(): Socket {
   if (!socket) {
-    console.log("[Socket] Initializing socket connection to", window.location.origin);
-    socket = io(window.location.origin, { transports: ["polling", "websocket"] });
+    // Connect to the same host but always port 3000 (Express server)
+    // If running behind a proxy/tunnel, use the same origin
+    const serverUrl = window.location.hostname === "localhost"
+      ? "http://localhost:3000"
+      : window.location.origin;
+
+    console.log("[Socket] Connecting to:", serverUrl);
+
+    socket = io(serverUrl, {
+      transports: ["polling", "websocket"],
+      reconnection: true,
+      reconnectionAttempts: 10,
+      reconnectionDelay: 1000,
+      timeout: 20000,
+    });
 
     socket.on("connect", () => {
       console.log("[Socket] ✅ Connected. ID:", socket.id);
@@ -14,7 +27,7 @@ export function getSocket(): Socket {
     });
 
     socket.on("disconnect", (reason) => {
-      console.warn("[Socket] ❌ Disconnected. Reason:", reason);
+      console.warn("[Socket] ❌ Disconnected:", reason);
       toast.error("Disconnected: " + reason);
     });
 
@@ -23,9 +36,10 @@ export function getSocket(): Socket {
       toast.error("Connection error: " + err.message);
     });
 
-    // Log ALL incoming events for debugging
     socket.onAny((event, ...args) => {
-      console.log("[Socket] ← received:", event, args);
+      if (event !== "message_token") {
+        console.log("[Socket] ←", event, args);
+      }
     });
   }
   return socket;
@@ -36,12 +50,10 @@ export function joinConversation(id: string) {
   console.log("[Socket] joinConversation:", id, "| connected:", s.connected);
   if (s.connected) {
     s.emit("join_conversation", { conversation_id: id });
-    console.log("[Socket] → emitted join_conversation");
   } else {
-    console.warn("[Socket] Not connected yet, queuing join for:", id);
     s.once("connect", () => {
       s.emit("join_conversation", { conversation_id: id });
-      console.log("[Socket] → emitted join_conversation (after connect)");
+      console.log("[Socket] → join_conversation (after connect)");
     });
   }
 }
@@ -52,19 +64,12 @@ export function sendAgentMessage(id: string, content: string, model?: string) {
   console.log("[Socket] sendAgentMessage:", payload, "| connected:", s.connected);
   if (s.connected) {
     s.emit("send_message", payload);
-    console.log("[Socket] → emitted send_message");
   } else {
-    console.warn("[Socket] Not connected, queuing send_message");
-    toast.error("Not connected to server yet, retrying...");
-    s.once("connect", () => {
-      s.emit("send_message", payload);
-      console.log("[Socket] → emitted send_message (after connect)");
-    });
+    toast.error("Not connected to server!");
+    s.once("connect", () => s.emit("send_message", payload));
   }
 }
 
 export function runTerminalCommand(id: string, command: string) {
-  const s = getSocket();
-  console.log("[Socket] runTerminalCommand:", command);
-  s.emit("terminal_run", { conversation_id: id, command });
+  getSocket().emit("terminal_run", { conversation_id: id, command });
 }
