@@ -1,355 +1,235 @@
 import React from "react";
+import { useParams, useNavigate } from "react-router-dom";
 import {
-  Send, Square, Bot, User, ChevronDown, ChevronRight,
-  Terminal as TerminalIcon, FileText, Search,
-  Globe, FolderOpen, Pencil, Trash2, Move, ChevronUp, Zap, CheckCircle2,
-  ListTodo, Hammer, ShieldCheck
+  Terminal as TerminalIcon, FileCode, FolderOpen, Globe,
+  Maximize2, Minimize2, Pencil, ArrowLeft, Cpu, MessageSquare, RotateCcw, ExternalLink
 } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import remarkBreaks from "remark-breaks";
+import { useConversationStore } from "@/src/stores/conversation-store";
 import { useEventStore } from "@/src/stores/event-store";
 import { useAgentStore } from "@/src/stores/agent-store";
-import { sendAgentMessage, getSocket } from "@/src/socket/socket";
-import { cn } from "@/src/lib/utils";
-import { motion, AnimatePresence } from "motion/react";
 import { useSettingsStore } from "@/src/stores/settings-store";
-import { getModels } from "@/src/api/conversations";
+import { getSocket, joinConversation, sendAgentMessage } from "@/src/socket/socket";
+import { getConversation, updateConversation, getModels } from "@/src/api/conversations";
+import { cn } from "@/src/lib/utils";
+import ChatInterface from "@/src/components/chat/ChatInterface";
+import Terminal from "@/src/components/terminal/Terminal";
+import FileExplorer from "@/src/components/files/FileExplorer";
+import CodeEditor from "@/src/components/editor/CodeEditor";
 
-const TOOL_ICONS: Record<string, any> = {
-  run_command: TerminalIcon, read_file: FileText, write_file: FileText, edit_file: Pencil,
-  list_files: FolderOpen, delete_file: Trash2, search_files: Search, create_directory: FolderOpen,
-  move_file: Move, get_project_info: Bot, web_search: Globe,
-};
-const TOOL_COLORS: Record<string, string> = {
-  run_command: "var(--color-yellow)", read_file: "var(--color-cyan)", write_file: "var(--color-green)",
-  edit_file: "var(--color-purple)", list_files: "var(--color-cyan)", delete_file: "var(--color-red)",
-  search_files: "var(--color-cyan)", web_search: "var(--color-cyan)", create_directory: "var(--color-green)",
-  move_file: "var(--color-yellow)", get_project_info: "var(--color-purple)",
-};
+type Tab = "terminal" | "files" | "editor" | "browser";
+type MobileView = "chat" | "tools";
 
-export default function ChatInterface({ conversationId }: { conversationId: string }) {
-  const [input, setInput] = React.useState("");
-  const inputRef = React.useRef("");
-  const { messages, toolEvents, addMessage } = useEventStore();
-  const { status, reset } = useAgentStore();
-  const statusRef = React.useRef(status);
-  const { selectedModel, setSelectedModel } = useSettingsStore();
-  const scrollRef = React.useRef<HTMLDivElement>(null);
-  const textRef = React.useRef<HTMLTextAreaElement>(null);
-  const [atBottom, setAtBottom] = React.useState(true);
-  const [modelPickerOpen, setModelPickerOpen] = React.useState(false);
-  const [models, setModels] = React.useState<any[]>([]);
-  const pickerRef = React.useRef<HTMLDivElement>(null);
-
-  React.useEffect(() => { reset(); }, [conversationId]);
-  React.useEffect(() => { statusRef.current = status; }, [status]);
-  React.useEffect(() => { getModels().then(setModels); }, []);
+export default function ConversationPage() {
+  const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const { setActiveConversationId, updateConversation: updateStore } = useConversationStore();
+  const { addMessage, appendToken, finalizeMessage, addToolEvent, clearAll } = useEventStore();
+  const { setStatus } = useAgentStore();
+  const { selectedModel } = useSettingsStore();
+  const [activeTab, setActiveTab] = React.useState<Tab>("editor");
+  const [mobileView, setMobileView] = React.useState<MobileView>("chat");
+  const [selectedFilePath, setSelectedFilePath] = React.useState<string | null>(null);
+  const [chatWidth, setChatWidth] = React.useState(420);
+  const [panelMaximized, setPanelMaximized] = React.useState(false);
+  const [editingTitle, setEditingTitle] = React.useState(false);
+  const [title, setTitle] = React.useState("");
 
   React.useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) {
-        setModelPickerOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, []);
-
-  const scrollToBottom = () => {
-    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-  };
-
-  React.useEffect(() => { if (atBottom) scrollToBottom(); }, [messages, toolEvents]);
-
-  const handleScroll = () => {
-    if (!scrollRef.current) return;
-    const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
-    setAtBottom(scrollHeight - scrollTop - clientHeight < 60);
-  };
-
-  const stop = () => {
-    getSocket().emit("stop_agent", { conversation_id: conversationId });
-  };
-
-  const send = () => {
-    const text = inputRef.current.trim();
-    if (!text || statusRef.current === "running") return;
-
-    const userMsg = {
-      id: `user-${Date.now()}`,
-      role: "user" as const,
-      content: text,
-      timestamp: new Date().toISOString(),
-    };
-    addMessage(userMsg);
-    sendAgentMessage(conversationId, text, selectedModel);
-    inputRef.current = "";
-    setInput("");
-    if (textRef.current) textRef.current.style.height = "auto";
-  };
-
-  const handleKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      send();
+    if (!id) return;
+    setActiveConversationId(id);
+    clearAll();
+    joinConversation(id);
+    getConversation(id).then((data) => {
+      data.messages?.forEach((msg: any) => addMessage(msg));
+      setTitle(data.title || "New Project");
+    });
+    const initialMsg = sessionStorage.getItem(`initial_msg_${id}`);
+    if (initialMsg) {
+      sendAgentMessage(id, initialMsg, selectedModel);
+      sessionStorage.removeItem(`initial_msg_${id}`);
     }
+    const socket = getSocket();
+    const onAgentStatus = ({ status }: any) => setStatus(status);
+    const onMessageStart = (msg: any) => addMessage({ ...msg, content: "", isStreaming: true });
+    const onMessageToken = ({ id: msgId, token }: any) => appendToken(msgId, token);
+    const onMessageDone = ({ id: msgId }: any) => finalizeMessage(msgId);
+    const onToolUse = (event: any) => addToolEvent({ type: "tool_use", ...event });
+    const onToolResult = (event: any) => addToolEvent({ type: "tool_result", ...event });
+    const onError = ({ message }: any) => {
+      setStatus("idle");
+      addMessage({
+        id: `error-${Date.now()}`,
+        role: "assistant",
+        content: `⚠️ **Error:** ${message}`,
+        timestamp: new Date().toISOString(),
+      });
+    };
+
+    socket.on("agent_status", onAgentStatus);
+    socket.on("message_start", onMessageStart);
+    socket.on("message_token", onMessageToken);
+    socket.on("message_done", onMessageDone);
+    socket.on("tool_use", onToolUse);
+    socket.on("tool_result", onToolResult);
+    socket.on("agent_error", onError);
+    return () => {
+      socket.off("agent_status", onAgentStatus);
+      socket.off("message_start", onMessageStart);
+      socket.off("message_token", onMessageToken);
+      socket.off("message_done", onMessageDone);
+      socket.off("tool_use", onToolUse);
+      socket.off("tool_result", onToolResult);
+      socket.off("agent_error", onError);
+    };
+  }, [id]);
+
+  const saveTitle = async () => {
+    setEditingTitle(false);
+    if (!id || !title.trim()) return;
+    await updateConversation(id, { title });
+    updateStore(id, { title });
   };
 
-  const isRunning = status === "running";
-  const hasInput = input.trim().length > 0;
-  const currentModel = models.find((m) => m.id === selectedModel);
-  const displayName = currentModel?.name ?? selectedModel;
+  const handleFileSelect = (path: string) => {
+    setSelectedFilePath(path);
+    setActiveTab("editor");
+    setMobileView("tools");
+  };
 
-  const allItems = React.useMemo(() => {
-    const msgs = messages.map((m) => ({ ...m, _type: "message" as const }));
-    const tools = toolEvents.map((t) => ({ ...t, id: `${t.tool}-${t.timestamp}`, role: "tool" as const, content: t.result || JSON.stringify(t.args), _type: "tool" as const }));
-    return [...msgs, ...tools].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-  }, [messages, toolEvents]);
+  if (!id) return null;
+
+  const TABS: { id: Tab; label: string; icon: any }[] = [
+    { id: "files", label: "Files", icon: FolderOpen },
+    { id: "editor", label: "Editor", icon: FileCode },
+    { id: "terminal", label: "Terminal", icon: TerminalIcon },
+    { id: "browser", label: "Preview", icon: Globe },
+  ];
 
   return (
-    <div className="flex flex-col h-full" style={{ background: "var(--color-bg)" }}>
-      {/* Header */}
-      <div className="h-14 flex items-center px-5 gap-3 border-b flex-shrink-0"
-        style={{ borderColor: "var(--color-border)", background: "var(--color-bg)" }}>
-        <div 
-          className={cn("w-2 h-2 rounded-full flex-shrink-0 transition-all", isRunning ? "bg-green-500 animate-pulse" : "bg-gray-600")} 
-          style={{ boxShadow: isRunning ? "0 0 8px rgba(74,222,128,0.6)" : "none" }}
-        />
-        <span className="text-sm font-semibold tracking-tight text-white">APEX Workspace</span>
-      </div>
-
-      {/* Messages */}
-      <div ref={scrollRef} onScroll={handleScroll}
-        className="flex-1 overflow-y-auto px-5 py-6 flex flex-col gap-6">
-        {allItems.length === 0 ? (
-          <div className="flex-1 flex flex-col items-center justify-center gap-4 opacity-50 py-20">
-            <Bot size={48} className="text-zinc-600" />
-            <p className="text-sm font-medium">What are we building today?</p>
+    <div className="flex flex-col h-full overflow-hidden bg-black">
+      <div className="hidden md:flex flex-1 overflow-hidden p-2 gap-2">
+        {/* Chat Panel */}
+        {!panelMaximized && (
+          <div style={{ width: chatWidth, minWidth: 320, maxWidth: 800 }} className="flex-shrink-0 h-full rounded-2xl overflow-hidden border border-zinc-800">
+            <ChatInterface conversationId={id} />
           </div>
-        ) : (
-          allItems.map((item) =>
-            item._type === "tool"
-              ? <ToolItem key={item.id} event={item as any} />
-              : <MessageItem key={item.id} msg={item as any} />
-          )
         )}
+
+        {/* Resize Handle */}
+        {!panelMaximized && (
+          <div
+            className="w-1.5 hover:bg-zinc-700 cursor-col-resize transition-all rounded-full z-20"
+            onMouseDown={(e) => {
+              const startX = e.clientX; const startW = chatWidth;
+              const move = (ev: MouseEvent) => { const nw = startW + ev.clientX - startX; if (nw > 300 && nw < 800) setChatWidth(nw); };
+              const up = () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
+              window.addEventListener("mousemove", move); window.addEventListener("mouseup", up);
+            }}
+          />
+        )}
+
+        {/* Workspace Panel */}
+        <div className="flex-1 h-full flex flex-col rounded-2xl overflow-hidden border border-zinc-800" style={{ background: "var(--color-surface)" }}>
+          <ToolsTopBar
+            tabs={TABS} activeTab={activeTab} setActiveTab={setActiveTab}
+            panelMaximized={panelMaximized} setPanelMaximized={setPanelMaximized}
+            editingTitle={editingTitle} setEditingTitle={setEditingTitle}
+            title={title} setTitle={setTitle} saveTitle={saveTitle}
+          />
+          <ToolsContent activeTab={activeTab} conversationId={id} selectedFilePath={selectedFilePath} onFileSelect={handleFileSelect} />
+        </div>
       </div>
 
-      {/* Input area */}
-      <div className="flex-shrink-0 p-4 pt-2" style={{ background: "var(--color-bg)" }}>
-        <div className="relative rounded-2xl overflow-visible transition-all duration-200"
-          style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", boxShadow: "0 4px 20px rgba(0,0,0,0.2)" }}>
-          
-          <textarea
-            ref={textRef}
-            value={input}
-            onChange={(e) => {
-              inputRef.current = e.target.value;
-              setInput(e.target.value);
-              e.target.style.height = "auto";
-              e.target.style.height = Math.min(e.target.scrollHeight, 200) + "px";
-            }}
-            onKeyDown={handleKey}
-            placeholder="Ask APEX to build, debug, or explore..."
-            rows={1}
-            className="w-full bg-transparent text-[15px] resize-none outline-none py-4 px-4 pb-12"
-            style={{ color: "var(--color-text)", maxHeight: 200, lineHeight: 1.5 }}
-          />
-
-          {/* Bottom Toolbar inside the input box */}
-          <div className="absolute bottom-2 right-2 left-2 flex items-center justify-between">
-            {/* Model picker popup & button */}
-            <div className="relative">
-              <AnimatePresence>
-                {modelPickerOpen && (
-                  <motion.div
-                    ref={pickerRef}
-                    initial={{ opacity: 0, y: 10, scale: 0.98 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={{ opacity: 0, y: 10, scale: 0.98 }}
-                    transition={{ duration: 0.15 }}
-                    className="absolute left-0 bottom-full mb-2 rounded-2xl overflow-hidden z-50 w-[300px]"
-                    style={{ background: "var(--color-surface2)", border: "1px solid var(--color-border2)", boxShadow: "0 -8px 40px rgba(0,0,0,0.5)" }}
-                  >
-                    <div className="p-2 overflow-y-auto" style={{ maxHeight: 260 }}>
-                      {models.map((m) => (
-                        <button
-                          key={m.id}
-                          onPointerDown={(e) => { e.preventDefault(); setSelectedModel(m.id); setModelPickerOpen(false); }}
-                          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left hover:bg-zinc-700/30 transition-colors"
-                        >
-                          <div className="flex-1 min-w-0">
-                            <span className="text-sm font-medium" style={{ color: selectedModel === m.id ? "white" : "var(--color-text)" }}>
-                              {m.name}
-                            </span>
-                          </div>
-                          {selectedModel === m.id && <CheckCircle2 size={14} className="text-blue-500 flex-shrink-0" />}
-                        </button>
-                      ))}
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-
-              <button
-                type="button"
-                onPointerDown={(e) => { e.preventDefault(); setModelPickerOpen((v) => !v); }}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium hover:bg-zinc-800/50 transition-colors"
-                style={{ color: "var(--color-muted)" }}
-              >
-                <span className="truncate max-w-[150px]">{displayName}</span>
-                {modelPickerOpen ? <ChevronDown size={12} /> : <ChevronUp size={12} />}
-              </button>
-            </div>
-
-            {/* Send button */}
-            <button
-              type="button"
-              onPointerDown={(e) => { e.preventDefault(); if (isRunning) { stop(); } else { send(); } }}
-              className="w-8 h-8 rounded-full flex items-center justify-center transition-all shadow-sm"
-              style={{
-                background: hasInput && !isRunning ? "var(--color-text)" : "var(--color-surface3)",
-                color: hasInput && !isRunning ? "#000" : "var(--color-muted)",
-                cursor: hasInput && !isRunning ? "pointer" : "default",
-              }}
-            >
-              {isRunning ? <Square size={12} /> : <ArrowUpIcon size={14} strokeWidth={3} />}
-            </button>
-          </div>
+      {/* Mobile Layout */}
+      <div className="flex md:hidden flex-col flex-1 overflow-hidden">
+        <div className="h-14 flex items-center px-4 gap-3 border-b border-zinc-800 bg-zinc-900 flex-shrink-0">
+          <button onClick={() => navigate("/")} className="text-zinc-400"><ArrowLeft size={20} /></button>
+          <span className="text-[15px] font-semibold text-white truncate">{title || "Workspace"}</span>
+        </div>
+        <div className="flex border-b border-zinc-800 bg-zinc-900 flex-shrink-0">
+          <button onClick={() => setMobileView("chat")} className="flex-1 py-3 text-sm font-medium flex justify-center gap-2 transition-colors" style={{ color: mobileView === "chat" ? "white" : "var(--color-muted)", borderBottom: mobileView === "chat" ? "2px solid white" : "2px solid transparent" }}><MessageSquare size={16} /> Chat</button>
+          <button onClick={() => { setActiveTab("editor"); setMobileView("tools"); }} className="flex-1 py-3 text-sm font-medium flex justify-center gap-2 transition-colors" style={{ color: mobileView === "tools" ? "white" : "var(--color-muted)", borderBottom: mobileView === "tools" ? "2px solid white" : "2px solid transparent" }}><FileCode size={16} /> Code</button>
+        </div>
+        <div className="flex-1 overflow-hidden">
+          {mobileView === "chat" ? <ChatInterface conversationId={id} /> : <ToolsContent activeTab={activeTab} conversationId={id} selectedFilePath={selectedFilePath} onFileSelect={handleFileSelect} />}
         </div>
       </div>
     </div>
   );
 }
 
-// Subcomponent replacing Send with Lovable's up arrow
-function ArrowUpIcon({ size, strokeWidth }: { size: number, strokeWidth: number }) {
+function ToolsTopBar({ tabs, activeTab, setActiveTab, panelMaximized, setPanelMaximized, editingTitle, setEditingTitle, title, setTitle, saveTitle }: any) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 19V5M5 12l7-7 7 7" />
-    </svg>
-  );
-}
+    <div className="h-14 border-b border-zinc-800 bg-[#0e0e11] flex items-center px-4 gap-4 flex-shrink-0">
+      {/* Title */}
+      {editingTitle ? (
+        <input value={title} onChange={(e) => setTitle(e.target.value)} onBlur={saveTitle} onKeyDown={(e) => { if (e.key === "Enter") saveTitle(); }}
+          autoFocus className="text-sm px-2 py-1 rounded outline-none bg-zinc-800 text-white w-48 border border-blue-500" />
+      ) : (
+        <button onClick={() => setEditingTitle(true)} className="flex items-center gap-2 text-sm font-medium text-zinc-300 hover:text-white transition-colors max-w-48">
+          <span className="truncate">{title}</span><Pencil size={12} />
+        </button>
+      )}
 
-// ---- Generative UI / Message Parser ----
-function parseGenerativeUI(content: string) {
-  const parts = [];
-  const regex = /(<plan>[\s\S]*?<\/plan>|<execute>[\s\S]*?<\/execute>|<verify>[\s\S]*?<\/verify>)/gi;
-  let lastIdx = 0;
-  let match;
-
-  while ((match = regex.exec(content)) !== null) {
-    if (match.index > lastIdx) parts.push({ type: "text", content: content.slice(lastIdx, match.index) });
-    
-    const tagMatch = match[0];
-    if (tagMatch.startsWith("<plan>")) {
-      parts.push({ type: "plan", content: tagMatch.slice(6, -7).trim() });
-    } else if (tagMatch.startsWith("<execute>")) {
-      parts.push({ type: "execute", content: tagMatch.slice(9, -10).trim() });
-    } else if (tagMatch.startsWith("<verify>")) {
-      parts.push({ type: "verify", content: tagMatch.slice(8, -9).trim() });
-    }
-    lastIdx = regex.lastIndex;
-  }
-  if (lastIdx < content.length) parts.push({ type: "text", content: content.slice(lastIdx) });
-
-  return parts;
-}
-
-function MessageItem({ msg }: { msg: any }) {
-  const isUser = msg.role === "user";
-
-  if (isUser) {
-    return (
-      <motion.div initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} className="flex justify-end mb-2">
-        <div className="max-w-[80%] rounded-3xl rounded-tr-sm px-5 py-3 text-[15px]"
-          style={{ background: "var(--color-surface2)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}>
-          <p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>
-        </div>
-      </motion.div>
-    );
-  }
-
-  // Agent Message with Generative UI
-  const parts = parseGenerativeUI(msg.content);
-
-  return (
-    <motion.div initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} className="flex gap-4 max-w-[95%]">
-      <div className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 mt-1"
-        style={{ background: "var(--color-cyan)", color: "#000" }}>
-        <Bot size={16} />
-      </div>
-      <div className="flex-1 min-w-0 pt-1.5">
-        {parts.map((p, i) => {
-          if (p.type === "plan") return (
-            <div key={i} className="gen-ui-card">
-              <div className="gen-ui-header text-blue-400"><ListTodo size={14} /> Agent Plan</div>
-              <div className="prose prose-invert prose-sm max-w-none">
-                <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{p.content}</ReactMarkdown>
-              </div>
-            </div>
+      {/* Tabs */}
+      <div className="flex bg-zinc-900/50 p-1 rounded-xl border border-zinc-800/50 flex-1 justify-center max-w-[400px] mx-auto">
+        {tabs.map((tab: any) => {
+          const Icon = tab.icon;
+          return (
+            <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+              className="flex items-center justify-center gap-2 flex-1 py-1.5 rounded-lg text-[13px] font-medium transition-all"
+              style={{ background: activeTab === tab.id ? "var(--color-surface3)" : "transparent", color: activeTab === tab.id ? "white" : "var(--color-muted)", boxShadow: activeTab === tab.id ? "0 1px 3px rgba(0,0,0,0.2)" : "none" }}>
+              <Icon size={14} /> <span className="hidden sm:inline">{tab.label}</span>
+            </button>
           );
-          if (p.type === "execute") return (
-            <div key={i} className="gen-ui-card">
-              <div className="gen-ui-header text-yellow-400"><Hammer size={14} /> Execution</div>
-              <div className="prose prose-invert prose-sm max-w-none">
-                <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{p.content}</ReactMarkdown>
-              </div>
-            </div>
-          );
-          if (p.type === "verify") return (
-            <div key={i} className="gen-ui-card">
-              <div className="gen-ui-header text-green-400"><ShieldCheck size={14} /> Verification</div>
-              <div className="prose prose-invert prose-sm max-w-none">
-                <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{p.content}</ReactMarkdown>
-              </div>
-            </div>
-          );
-          
-          return p.content ? (
-            <div key={i} className="prose prose-invert prose-sm max-w-none mb-3">
-              <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{p.content}</ReactMarkdown>
-            </div>
-          ) : null;
         })}
       </div>
-    </motion.div>
+
+      <button onClick={() => setPanelMaximized(!panelMaximized)} className="p-2 rounded hover:bg-zinc-800 text-zinc-400 hover:text-white ml-auto">
+        {panelMaximized ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+      </button>
+    </div>
   );
 }
 
-// ---- Tool event item ----
-function ToolItem({ event }: { event: any }) {
-  const [expanded, setExpanded] = React.useState(false);
-  const Icon = TOOL_ICONS[event.tool] || Bot;
-  const color = TOOL_COLORS[event.tool] || "var(--color-muted)";
-  const isResult = event.type === "tool_result";
-  const content = event.result || JSON.stringify(event.args, null, 2) || "";
-  const preview = content.split("\n").slice(0, 1).join("\n");
+function BrowserPreview() {
+  const [url, setUrl] = React.useState("http://localhost:5173");
+  const [iframeKey, setIframeKey] = React.useState(0);
 
   return (
-    <motion.div initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }}
-      className="ml-12 mr-8 rounded-xl overflow-hidden text-[13px] font-mono my-1"
-      style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}>
-      <button onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-zinc-800/50 transition-colors"
-        style={{ borderBottom: expanded ? "1px solid var(--color-border)" : "none" }}>
-        <Icon size={14} style={{ color, flexShrink: 0 }} />
-        <span style={{ color }}>{event.tool}</span>
-        {event.args?.command && <span className="ml-1 truncate text-zinc-500">{event.args.command}</span>}
-        {event.args?.path && <span className="ml-1 truncate text-zinc-500">{event.args.path}</span>}
-        <span className="ml-auto flex-shrink-0 text-zinc-600">{expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</span>
-      </button>
-      {expanded && (
-        <div className="px-3 py-2 overflow-x-auto text-zinc-400" style={{ maxHeight: 240, overflowY: "auto" }}>
-          <pre className="whitespace-pre-wrap break-all text-[12px]">{content}</pre>
+    <div className="flex flex-col h-full bg-[#1e1e24]">
+      {/* Mock Browser URL Bar */}
+      <div className="h-12 bg-[#2a2a35] flex items-center px-4 gap-3 border-b border-zinc-800/50">
+        <div className="flex gap-1.5">
+          <div className="w-3 h-3 rounded-full bg-red-500/80"></div>
+          <div className="w-3 h-3 rounded-full bg-yellow-500/80"></div>
+          <div className="w-3 h-3 rounded-full bg-green-500/80"></div>
         </div>
-      )}
-      {!expanded && isResult && content && (
-        <div className="px-3 pb-2 pt-0.5 text-zinc-500">
-          <pre className="whitespace-pre-wrap break-all text-[11px] truncate opacity-80">{preview}</pre>
+        <button onClick={() => setIframeKey(k => k + 1)} className="p-1.5 hover:bg-zinc-700 rounded-md text-zinc-400 ml-2">
+          <RotateCcw size={14} />
+        </button>
+        <div className="flex-1 max-w-2xl bg-[#1e1e24] border border-zinc-700/50 rounded-lg px-3 py-1.5 flex items-center shadow-inner">
+          <Globe size={14} className="text-zinc-500 mr-2" />
+          <input value={url} onChange={e => setUrl(e.target.value)} className="bg-transparent flex-1 text-[13px] outline-none text-zinc-300 font-mono" />
         </div>
-      )}
-    </motion.div>
+        <a href={url} target="_blank" rel="noreferrer" className="p-1.5 hover:bg-zinc-700 rounded-md text-zinc-400">
+          <ExternalLink size={14} />
+        </a>
+      </div>
+      <div className="flex-1 bg-white">
+        <iframe key={iframeKey} src={url} className="w-full h-full border-none bg-white" title="Preview" sandbox="allow-same-origin allow-scripts allow-forms allow-popups" />
+      </div>
+    </div>
+  );
+}
+
+function ToolsContent({ activeTab, conversationId, selectedFilePath, onFileSelect }: any) {
+  return (
+    <div className="flex-1 overflow-hidden relative h-full bg-[#0e0e11]">
+      <div className={cn("absolute inset-0", activeTab !== "terminal" && "hidden")}><Terminal conversationId={conversationId} /></div>
+      <div className={cn("absolute inset-0", activeTab !== "files" && "hidden")}><FileExplorer conversationId={conversationId} onFileSelect={onFileSelect} activePath={selectedFilePath} /></div>
+      <div className={cn("absolute inset-0", activeTab !== "editor" && "hidden")}><CodeEditor conversationId={conversationId} filePath={selectedFilePath} /></div>
+      <div className={cn("absolute inset-0", activeTab !== "browser" && "hidden")}><BrowserPreview /></div>
+    </div>
   );
 }
