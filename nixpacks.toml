@@ -1,5 +1,5 @@
 [phases.setup]
-nixPkgs = ["nodejs_20"]
+nixPkgs = ["nodejs_20", "npm"]
 
 [phases.install]
 cmds = ["npm install"]
@@ -8,4 +8,4 @@ cmds = ["npm install"]
 cmds = ["npm run build"]
 
 [start]
-cmd = "node --loader tsx/esm server.ts"
+cmd = "npx tsx server.ts"
