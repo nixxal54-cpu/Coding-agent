@@ -185,7 +185,8 @@ async function executeTool(name: string, args: any, workspace: string): Promise<
         const p = path.join(workspace, args.path);
         let c = await fs.readFile(p, "utf-8");
         if (!c.includes(args.old_str)) return `Error: Pattern not found in ${args.path}`;
-        await fs.writeFile(p, c.replace(args.old_str, args.new_str), "utf-8");
+        // Replace all occurrences
+        await fs.writeFile(p, c.split(args.old_str).join(args.new_str), "utf-8");
         return `✓ Edited: ${args.path}`;
       } catch (e: any) { return `Error: ${e.message}`; }
     }
@@ -228,9 +229,19 @@ async function executeTool(name: string, args: any, workspace: string): Promise<
     }
     case "web_search": {
       try {
-        const r = await fetch(`https://api.duckduckgo.com/?q=${encodeURIComponent(args.query)}&format=json&no_html=1`);
-        const d: any = await r.json();
-        return [d.AbstractText, ...(d.RelatedTopics || []).slice(0, 5).map((t: any) => t.Text)].filter(Boolean).join("\n\n") || "No results. Try run_command with curl.";
+        const { output } = await runCommand(
+          `curl -sL "https://api.duckduckgo.com/?q=${encodeURIComponent(args.query)}&format=json&no_html=1&skip_disambig=1" 2>/dev/null`,
+          workspace, 15000
+        );
+        const d = JSON.parse(output);
+        const results = [
+          d.AbstractText,
+          d.Answer,
+          ...(d.RelatedTopics || []).slice(0, 5).map((t: any) => t.Text),
+        ].filter(Boolean);
+        if (results.length > 0) return results.join("\n\n");
+        // Fallback: use curl to fetch a quick summary
+        return `No instant answer found for "${args.query}". Try using run_command with curl to fetch specific documentation URLs.`;
       } catch { return "Search failed. Try run_command with curl for specific docs."; }
     }
     default: return `Unknown tool: ${name}`;
@@ -294,9 +305,17 @@ app.post("/api/terminal/run", async (req, res) => {
   res.json({ output, exitCode });
 });
 
+// Track active agent loops per conversation so they can be cancelled
+const activeAgentLoops: Map<string, boolean> = new Map();
+
 // --- Socket ---
 io.on("connection", (socket) => {
   socket.on("join_conversation", ({ conversation_id }) => { socket.join(conversation_id); socket.emit("joined", { conversation_id }); });
+
+  socket.on("stop_agent", ({ conversation_id }) => {
+    activeAgentLoops.set(conversation_id, false); // signal stop
+    io.to(conversation_id).emit("agent_status", { status: "idle" });
+  });
 
   socket.on("terminal_run", async ({ conversation_id, command }) => {
     const w = await ensureWorkspace(conversation_id);
@@ -323,8 +342,10 @@ io.on("connection", (socket) => {
 
     try {
       const client = getGroqClient();
+      activeAgentLoops.set(conversation_id, true);
       let loops = 0;
       while (loops++ < 12) {
+        if (!activeAgentLoops.get(conversation_id)) break; // stopped by user
         const stream = await (client.chat.completions.create as any)({ model: selectedModel, messages: history, tools: TOOLS, tool_choice: "auto", stream: true, temperature: 0.3 });
         let currentContent = ""; let toolCalls: any[] = [];
         for await (const chunk of stream as AsyncIterable<any>) {
@@ -341,8 +362,8 @@ io.on("connection", (socket) => {
             }
           }
         }
-        if (currentContent) history.push({ role: "assistant", content: currentContent });
         if (toolCalls.length > 0) {
+          // When tool_calls are present, push a single assistant message with both content and tool_calls
           const atm: any = { role: "assistant", tool_calls: toolCalls.map((tc) => ({ id: tc.id, type: "function", function: tc.function })) };
           if (currentContent) atm.content = currentContent;
           history.push(atm);
@@ -356,15 +377,20 @@ io.on("connection", (socket) => {
           }
           continue;
         }
+        // No tool calls — push the text response and stop the loop
+        if (currentContent) history.push({ role: "assistant", content: currentContent });
         break;
       }
     } catch (e: any) {
-      const msg = e.message || "Error"; io.to(conversation_id).emit("error", { message: msg }); fullResponse += `\n\n⚠️ Error: ${msg}`;
+      const msg = e.message || "Error";
+      io.to(conversation_id).emit("agent_error", { message: msg });
+      fullResponse += `\n\n⚠️ Error: ${msg}`;
     }
 
     conv.messages.push({ id: assistantId, role: "assistant", content: fullResponse, timestamp: new Date().toISOString() });
     conv.message_count = conv.messages.length; conv.updated_at = new Date().toISOString(); conv.status = "idle";
     if (conv.messages.length === 2) conv.title = content.slice(0, 60);
+    activeAgentLoops.delete(conversation_id);
     await saveConversations(conversationsDB);
     io.to(conversation_id).emit("message_done", { id: assistantId });
     io.to(conversation_id).emit("agent_status", { status: "idle" });
