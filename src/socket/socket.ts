@@ -6,7 +6,7 @@ let socket: Socket;
 export function getSocket(): Socket {
   if (!socket) {
     console.log("[Socket] Initializing socket connection to", window.location.origin);
-    socket = io(window.location.origin, { transports: ["websocket", "polling"] });
+    socket = io(window.location.origin, { transports: ["polling", "websocket"] });
 
     socket.on("connect", () => {
       console.log("[Socket] ✅ Connected. ID:", socket.id);
