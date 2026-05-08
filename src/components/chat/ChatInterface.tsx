@@ -10,7 +10,7 @@ import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import { useEventStore } from "@/src/stores/event-store";
 import { useAgentStore } from "@/src/stores/agent-store";
-import { sendAgentMessage } from "@/src/socket/socket";
+import { sendAgentMessage, getSocket } from "@/src/socket/socket";
 import { cn } from "@/src/lib/utils";
 import { motion, AnimatePresence } from "motion/react";
 import { useSettingsStore } from "@/src/stores/settings-store";
@@ -30,8 +30,10 @@ const TOOL_COLORS: Record<string, string> = {
 
 export default function ChatInterface({ conversationId }: { conversationId: string }) {
   const [input, setInput] = React.useState("");
+  const inputRef = React.useRef("");
   const { messages, toolEvents, addMessage } = useEventStore();
   const { status, reset } = useAgentStore();
+  const statusRef = React.useRef(status);
   const { selectedModel, setSelectedModel } = useSettingsStore();
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const textRef = React.useRef<HTMLTextAreaElement>(null);
@@ -41,6 +43,7 @@ export default function ChatInterface({ conversationId }: { conversationId: stri
   const pickerRef = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => { reset(); }, [conversationId]);
+  React.useEffect(() => { statusRef.current = status; }, [status]);
   React.useEffect(() => { getModels().then(setModels); }, []);
 
   React.useEffect(() => {
@@ -65,9 +68,13 @@ export default function ChatInterface({ conversationId }: { conversationId: stri
     setAtBottom(scrollHeight - scrollTop - clientHeight < 60);
   };
 
+  const stop = () => {
+    getSocket().emit("stop_agent", { conversation_id: conversationId });
+  };
+
   const send = () => {
-    const text = input.trim();
-    if (!text || status === "running") return;
+    const text = inputRef.current.trim();
+    if (!text || statusRef.current === "running") return;
 
     const userMsg = {
       id: `user-${Date.now()}`,
@@ -77,6 +84,7 @@ export default function ChatInterface({ conversationId }: { conversationId: stri
     };
     addMessage(userMsg);
     sendAgentMessage(conversationId, text, selectedModel);
+    inputRef.current = "";
     setInput("");
     if (textRef.current) textRef.current.style.height = "auto";
   };
@@ -137,6 +145,7 @@ export default function ChatInterface({ conversationId }: { conversationId: stri
             ref={textRef}
             value={input}
             onChange={(e) => {
+              inputRef.current = e.target.value;
               setInput(e.target.value);
               e.target.style.height = "auto";
               e.target.style.height = Math.min(e.target.scrollHeight, 200) + "px";
@@ -197,7 +206,7 @@ export default function ChatInterface({ conversationId }: { conversationId: stri
             {/* Send button */}
             <button
               type="button"
-              onPointerDown={(e) => { e.preventDefault(); send(); }}
+              onPointerDown={(e) => { e.preventDefault(); if (isRunning) { stop(); } else { send(); } }}
               className="w-8 h-8 rounded-full flex items-center justify-center transition-all shadow-sm"
               style={{
                 background: hasInput && !isRunning ? "var(--color-text)" : "var(--color-surface3)",
