@@ -3,7 +3,6 @@ import Home from "./pages/Home";
 import ConversationPage from "./pages/ConversationPage";
 import Settings from "./pages/Settings";
 import MainLayout from "./components/layout/MainLayout";
-import DebugPanel from "./components/DebugPanel";
 
 export default function App() {
   return (
@@ -15,7 +14,6 @@ export default function App() {
           <Route path="settings" element={<Settings />} />
         </Route>
       </Routes>
-      <DebugPanel />
     </BrowserRouter>
   );
 }
