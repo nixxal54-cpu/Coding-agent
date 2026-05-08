@@ -2,7 +2,8 @@ import React from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
   Terminal as TerminalIcon, FileCode, FolderOpen, Globe,
-  Maximize2, Minimize2, Pencil, ArrowLeft, Cpu, MessageSquare, RotateCcw, ExternalLink
+  Maximize2, Minimize2, Pencil, ArrowLeft, MessageSquare, RotateCcw,
+  ExternalLink, Check, X
 } from "lucide-react";
 import toast from "react-hot-toast";
 import { useConversationStore } from "@/src/stores/conversation-store";
@@ -30,61 +31,33 @@ export default function ConversationPage() {
   const [activeTab, setActiveTab] = React.useState<Tab>("editor");
   const [mobileView, setMobileView] = React.useState<MobileView>("chat");
   const [selectedFilePath, setSelectedFilePath] = React.useState<string | null>(null);
-  const [chatWidth, setChatWidth] = React.useState(420);
+  const [chatWidth, setChatWidth] = React.useState(400);
   const [panelMaximized, setPanelMaximized] = React.useState(false);
   const [editingTitle, setEditingTitle] = React.useState(false);
   const [title, setTitle] = React.useState("");
+  const [titleInput, setTitleInput] = React.useState("");
+  const isDragging = React.useRef(false);
 
   React.useEffect(() => {
     if (!id) return;
     setActiveConversationId(id);
     clearAll();
-
     const socket = getSocket();
 
-    // 1. Register ALL listeners FIRST before doing anything else
-    const onAgentStatus = ({ status }: any) => {
-      console.log("[ConversationPage] agent_status:", status);
-      setStatus(status);
-    };
-    const onMessageStart = (msg: any) => {
-      console.log("[ConversationPage] message_start:", msg);
-      addMessage({ ...msg, content: "", isStreaming: true });
-    };
+    const onAgentStatus = ({ status }: any) => setStatus(status);
+    const onMessageStart = (msg: any) => addMessage({ ...msg, content: "", isStreaming: true });
     const onMessageToken = ({ id: msgId, token }: any) => appendToken(msgId, token);
-    const onMessageDone = ({ id: msgId }: any) => {
-      console.log("[ConversationPage] message_done:", msgId);
-      finalizeMessage(msgId);
-    };
-    const onToolUse = (event: any) => {
-      console.log("[ConversationPage] tool_use:", event);
-      addToolEvent({ type: "tool_use", ...event });
-    };
-    const onToolResult = (event: any) => {
-      console.log("[ConversationPage] tool_result:", event.tool, event.result?.slice?.(0, 80));
-      addToolEvent({ type: "tool_result", ...event });
-    };
+    const onMessageDone = ({ id: msgId }: any) => finalizeMessage(msgId);
+    const onToolUse = (event: any) => addToolEvent({ type: "tool_use", ...event });
+    const onToolResult = (event: any) => addToolEvent({ type: "tool_result", ...event });
     const onError = ({ message }: any) => {
-      console.error("[ConversationPage] agent_error:", message);
       toast.error("Agent error: " + message);
       setStatus("idle");
-      addMessage({
-        id: `error-${Date.now()}`,
-        role: "assistant",
-        content: `⚠️ **Error:** ${message}`,
-        timestamp: new Date().toISOString(),
-      });
+      addMessage({ id: `error-${Date.now()}`, role: "assistant", content: `⚠️ **Error:** ${message}`, timestamp: new Date().toISOString() });
     };
     const onJoined = (data: any) => {
-      console.log("[ConversationPage] joined room:", data);
-      toast.success("Joined workspace room");
-      // 3. Send initial message ONLY after room is confirmed joined
       const initialMsg = sessionStorage.getItem(`initial_msg_${id}`);
-      if (initialMsg) {
-        console.log("[ConversationPage] Sending initial message:", initialMsg.slice(0, 60));
-        sendAgentMessage(id, initialMsg, selectedModel);
-        sessionStorage.removeItem(`initial_msg_${id}`);
-      }
+      if (initialMsg) { sendAgentMessage(id, initialMsg, selectedModel); sessionStorage.removeItem(`initial_msg_${id}`); }
     };
 
     socket.on("joined", onJoined);
@@ -96,10 +69,10 @@ export default function ConversationPage() {
     socket.on("tool_result", onToolResult);
     socket.on("agent_error", onError);
 
-    // 2. Load history and join room AFTER listeners are set up
     getConversation(id).then((data) => {
       data.messages?.forEach((msg: any) => addMessage(msg));
       setTitle(data.title || "New Project");
+      setTitleInput(data.title || "New Project");
     });
     joinConversation(id);
 
@@ -117,9 +90,15 @@ export default function ConversationPage() {
 
   const saveTitle = async () => {
     setEditingTitle(false);
-    if (!id || !title.trim()) return;
-    await updateConversation(id, { title });
-    updateStore(id, { title });
+    if (!id || !titleInput.trim() || titleInput === title) return;
+    setTitle(titleInput);
+    await updateConversation(id, { title: titleInput });
+    updateStore(id, { title: titleInput });
+  };
+
+  const cancelTitle = () => {
+    setEditingTitle(false);
+    setTitleInput(title);
   };
 
   const handleFileSelect = (path: string) => {
@@ -130,95 +109,163 @@ export default function ConversationPage() {
 
   if (!id) return null;
 
-  const TABS: { id: Tab; label: string; icon: any }[] = [
-    { id: "files", label: "Files", icon: FolderOpen },
-    { id: "editor", label: "Editor", icon: FileCode },
+  const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
+    { id: "files",    label: "Files",    icon: FolderOpen },
+    { id: "editor",   label: "Editor",   icon: FileCode },
     { id: "terminal", label: "Terminal", icon: TerminalIcon },
-    { id: "browser", label: "Preview", icon: Globe },
+    { id: "browser",  label: "Preview",  icon: Globe },
   ];
 
   return (
-    <div className="flex flex-col h-full overflow-hidden bg-black">
-      <div className="hidden md:flex flex-1 overflow-hidden p-2 gap-2">
-        {/* Chat Panel */}
+    <div className="flex flex-col h-full overflow-hidden" style={{ background: "var(--color-bg)" }}>
+      {/* ── Desktop layout ── */}
+      <div className="hidden md:flex flex-1 overflow-hidden gap-0">
+        {/* Chat panel */}
         {!panelMaximized && (
-          <div style={{ width: chatWidth, minWidth: 320, maxWidth: 800 }} className="flex-shrink-0 h-full rounded-2xl overflow-hidden border border-zinc-800">
+          <div
+            style={{ width: chatWidth, minWidth: 300, maxWidth: 680, flexShrink: 0 }}
+            className="h-full border-r"
+            style={{ width: chatWidth, minWidth: 300, maxWidth: 680, flexShrink: 0, borderRight: "1px solid var(--color-border)" }}
+          >
             <ChatInterface conversationId={id} />
           </div>
         )}
 
-        {/* Resize Handle */}
+        {/* Resize handle */}
         {!panelMaximized && (
           <div
-            className="w-1.5 hover:bg-zinc-700 cursor-col-resize transition-all rounded-full z-20"
+            className="w-[3px] cursor-col-resize z-20 flex-shrink-0 group"
+            style={{ background: "transparent" }}
             onMouseDown={(e) => {
-              const startX = e.clientX; const startW = chatWidth;
-              const move = (ev: MouseEvent) => { const nw = startW + ev.clientX - startX; if (nw > 300 && nw < 800) setChatWidth(nw); };
-              const up = () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
-              window.addEventListener("mousemove", move); window.addEventListener("mouseup", up);
+              isDragging.current = true;
+              const startX = e.clientX;
+              const startW = chatWidth;
+              const move = (ev: MouseEvent) => {
+                if (!isDragging.current) return;
+                const nw = startW + ev.clientX - startX;
+                if (nw > 280 && nw < 700) setChatWidth(nw);
+              };
+              const up = () => {
+                isDragging.current = false;
+                window.removeEventListener("mousemove", move);
+                window.removeEventListener("mouseup", up);
+              };
+              window.addEventListener("mousemove", move);
+              window.addEventListener("mouseup", up);
             }}
-          />
+          >
+            <div className="w-full h-full group-hover:bg-cyan-500/30 transition-colors duration-150" />
+          </div>
         )}
 
-        {/* Workspace Panel */}
-        <div className="flex-1 h-full flex flex-col rounded-2xl overflow-hidden border border-zinc-800" style={{ background: "var(--color-surface)" }}>
-          <ToolsTopBar
+        {/* Workspace panel */}
+        <div className="flex-1 h-full flex flex-col overflow-hidden" style={{ background: "var(--color-surface)" }}>
+          <WorkspaceTopBar
             tabs={TABS} activeTab={activeTab} setActiveTab={setActiveTab}
             panelMaximized={panelMaximized} setPanelMaximized={setPanelMaximized}
             editingTitle={editingTitle} setEditingTitle={setEditingTitle}
-            title={title} setTitle={setTitle} saveTitle={saveTitle}
+            title={title} titleInput={titleInput} setTitleInput={setTitleInput}
+            saveTitle={saveTitle} cancelTitle={cancelTitle}
           />
-          <ToolsContent activeTab={activeTab} conversationId={id} selectedFilePath={selectedFilePath} onFileSelect={handleFileSelect} />
+          <WorkspaceContent activeTab={activeTab} conversationId={id} selectedFilePath={selectedFilePath} onFileSelect={handleFileSelect} />
         </div>
       </div>
 
-      {/* Mobile Layout */}
+      {/* ── Mobile layout ── */}
       <div className="flex md:hidden flex-col flex-1 overflow-hidden">
-        <div className="h-14 flex items-center px-4 gap-3 border-b border-zinc-800 bg-zinc-900 flex-shrink-0">
-          <button onClick={() => navigate("/")} className="text-zinc-400"><ArrowLeft size={20} /></button>
-          <span className="text-[15px] font-semibold text-white truncate">{title || "Workspace"}</span>
+        <div className="h-12 flex items-center px-4 gap-3 border-b flex-shrink-0"
+          style={{ borderColor: "var(--color-border)", background: "var(--color-surface)" }}>
+          <button onClick={() => navigate("/")} style={{ color: "var(--color-muted)" }}>
+            <ArrowLeft size={18} />
+          </button>
+          <span className="text-sm font-semibold text-white truncate flex-1">{title}</span>
         </div>
-        <div className="flex border-b border-zinc-800 bg-zinc-900 flex-shrink-0">
-          <button onClick={() => setMobileView("chat")} className="flex-1 py-3 text-sm font-medium flex justify-center gap-2 transition-colors" style={{ color: mobileView === "chat" ? "white" : "var(--color-muted)", borderBottom: mobileView === "chat" ? "2px solid white" : "2px solid transparent" }}><MessageSquare size={16} /> Chat</button>
-          <button onClick={() => { setActiveTab("editor"); setMobileView("tools"); }} className="flex-1 py-3 text-sm font-medium flex justify-center gap-2 transition-colors" style={{ color: mobileView === "tools" ? "white" : "var(--color-muted)", borderBottom: mobileView === "tools" ? "2px solid white" : "2px solid transparent" }}><FileCode size={16} /> Code</button>
+        <div className="flex border-b flex-shrink-0" style={{ borderColor: "var(--color-border)", background: "var(--color-surface)" }}>
+          {[
+            { key: "chat", icon: MessageSquare, label: "Chat" },
+            { key: "tools", icon: FileCode, label: "Code" },
+          ].map(({ key, icon: Icon, label }) => (
+            <button key={key}
+              onClick={() => { if (key === "tools") setActiveTab("editor"); setMobileView(key as MobileView); }}
+              className="flex-1 py-2.5 text-xs font-medium flex justify-center gap-2 items-center transition-colors"
+              style={{
+                color: mobileView === key ? "white" : "var(--color-muted)",
+                borderBottom: mobileView === key ? "2px solid var(--color-cyan)" : "2px solid transparent",
+              }}>
+              <Icon size={14} />{label}
+            </button>
+          ))}
         </div>
         <div className="flex-1 overflow-hidden">
-          {mobileView === "chat" ? <ChatInterface conversationId={id} /> : <ToolsContent activeTab={activeTab} conversationId={id} selectedFilePath={selectedFilePath} onFileSelect={handleFileSelect} />}
+          {mobileView === "chat"
+            ? <ChatInterface conversationId={id} />
+            : <WorkspaceContent activeTab={activeTab} conversationId={id} selectedFilePath={selectedFilePath} onFileSelect={handleFileSelect} />
+          }
         </div>
       </div>
     </div>
   );
 }
 
-function ToolsTopBar({ tabs, activeTab, setActiveTab, panelMaximized, setPanelMaximized, editingTitle, setEditingTitle, title, setTitle, saveTitle }: any) {
+function WorkspaceTopBar({ tabs, activeTab, setActiveTab, panelMaximized, setPanelMaximized, editingTitle, setEditingTitle, title, titleInput, setTitleInput, saveTitle, cancelTitle }: any) {
   return (
-    <div className="h-14 border-b border-zinc-800 bg-[#0e0e11] flex items-center px-4 gap-4 flex-shrink-0">
-      {/* Title */}
-      {editingTitle ? (
-        <input value={title} onChange={(e) => setTitle(e.target.value)} onBlur={saveTitle} onKeyDown={(e) => { if (e.key === "Enter") saveTitle(); }}
-          autoFocus className="text-sm px-2 py-1 rounded outline-none bg-zinc-800 text-white w-48 border border-blue-500" />
-      ) : (
-        <button onClick={() => setEditingTitle(true)} className="flex items-center gap-2 text-sm font-medium text-zinc-300 hover:text-white transition-colors max-w-48">
-          <span className="truncate">{title}</span><Pencil size={12} />
-        </button>
-      )}
+    <div className="h-[52px] border-b flex items-center px-4 gap-3 flex-shrink-0"
+      style={{ borderColor: "var(--color-border)", background: "var(--color-surface)" }}>
 
-      {/* Tabs */}
-      <div className="flex bg-zinc-900/50 p-1 rounded-xl border border-zinc-800/50 flex-1 justify-center max-w-[400px] mx-auto">
-        {tabs.map((tab: any) => {
-          const Icon = tab.icon;
-          return (
-            <button key={tab.id} onClick={() => setActiveTab(tab.id)}
-              className="flex items-center justify-center gap-2 flex-1 py-1.5 rounded-lg text-[13px] font-medium transition-all"
-              style={{ background: activeTab === tab.id ? "var(--color-surface3)" : "transparent", color: activeTab === tab.id ? "white" : "var(--color-muted)", boxShadow: activeTab === tab.id ? "0 1px 3px rgba(0,0,0,0.2)" : "none" }}>
-              <Icon size={14} /> <span className="hidden sm:inline">{tab.label}</span>
-            </button>
-          );
-        })}
+      {/* Editable title */}
+      <div className="flex items-center gap-1.5 min-w-0 flex-shrink">
+        {editingTitle ? (
+          <div className="flex items-center gap-1.5">
+            <input
+              value={titleInput}
+              onChange={(e) => setTitleInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") saveTitle(); if (e.key === "Escape") cancelTitle(); }}
+              autoFocus
+              className="text-sm px-2.5 py-1 rounded-lg outline-none w-44"
+              style={{ background: "var(--color-surface2)", border: "1px solid var(--color-cyan2)", color: "white" }}
+            />
+            <button onClick={saveTitle} className="p-1 rounded" style={{ color: "var(--color-green)" }}><Check size={13} /></button>
+            <button onClick={cancelTitle} className="p-1 rounded" style={{ color: "var(--color-muted)" }}><X size={13} /></button>
+          </div>
+        ) : (
+          <button onClick={() => setEditingTitle(true)}
+            className="flex items-center gap-1.5 max-w-[160px] group"
+            title="Rename project">
+            <span className="text-sm font-medium truncate" style={{ color: "var(--color-text)" }}>{title}</span>
+            <Pencil size={11} className="flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" style={{ color: "var(--color-muted)" }} />
+          </button>
+        )}
       </div>
 
-      <button onClick={() => setPanelMaximized(!panelMaximized)} className="p-2 rounded hover:bg-zinc-800 text-zinc-400 hover:text-white ml-auto">
-        {panelMaximized ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+      {/* Tab bar */}
+      <div className="flex items-center gap-0.5 flex-1 justify-center">
+        <div className="flex items-center p-1 rounded-xl gap-0.5" style={{ background: "var(--color-surface2)", border: "1px solid var(--color-border)" }}>
+          {tabs.map((tab: any) => {
+            const Icon = tab.icon;
+            const isActive = activeTab === tab.id;
+            return (
+              <button key={tab.id} onClick={() => setActiveTab(tab.id)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
+                style={{
+                  background: isActive ? "var(--color-surface3)" : "transparent",
+                  color: isActive ? "white" : "var(--color-muted)",
+                  boxShadow: isActive ? "0 1px 4px rgba(0,0,0,0.25)" : "none",
+                }}>
+                <Icon size={13} />
+                <span className="hidden sm:inline">{tab.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Maximize */}
+      <button onClick={() => setPanelMaximized(!panelMaximized)}
+        className="p-2 rounded-lg transition-colors flex-shrink-0"
+        style={{ color: "var(--color-muted)", background: "transparent" }}
+        onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--color-surface2)"; (e.currentTarget as HTMLElement).style.color = "white"; }}
+        onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "var(--color-muted)"; }}>
+        {panelMaximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
       </button>
     </div>
   );
@@ -229,39 +276,42 @@ function BrowserPreview() {
   const [iframeKey, setIframeKey] = React.useState(0);
 
   return (
-    <div className="flex flex-col h-full bg-[#1e1e24]">
-      {/* Mock Browser URL Bar */}
-      <div className="h-12 bg-[#2a2a35] flex items-center px-4 gap-3 border-b border-zinc-800/50">
+    <div className="flex flex-col h-full" style={{ background: "#0d0d14" }}>
+      <div className="h-11 flex items-center px-4 gap-3 border-b" style={{ borderColor: "var(--color-border)", background: "var(--color-surface)" }}>
         <div className="flex gap-1.5">
-          <div className="w-3 h-3 rounded-full bg-red-500/80"></div>
-          <div className="w-3 h-3 rounded-full bg-yellow-500/80"></div>
-          <div className="w-3 h-3 rounded-full bg-green-500/80"></div>
+          <div className="w-2.5 h-2.5 rounded-full" style={{ background: "#f87171" }} />
+          <div className="w-2.5 h-2.5 rounded-full" style={{ background: "#fbbf24" }} />
+          <div className="w-2.5 h-2.5 rounded-full" style={{ background: "#34d399" }} />
         </div>
-        <button onClick={() => setIframeKey(k => k + 1)} className="p-1.5 hover:bg-zinc-700 rounded-md text-zinc-400 ml-2">
-          <RotateCcw size={14} />
+        <button onClick={() => setIframeKey((k) => k + 1)} className="p-1 rounded" style={{ color: "var(--color-muted)" }}>
+          <RotateCcw size={13} />
         </button>
-        <div className="flex-1 max-w-2xl bg-[#1e1e24] border border-zinc-700/50 rounded-lg px-3 py-1.5 flex items-center shadow-inner">
-          <Globe size={14} className="text-zinc-500 mr-2" />
-          <input value={url} onChange={e => setUrl(e.target.value)} className="bg-transparent flex-1 text-[13px] outline-none text-zinc-300 font-mono" />
+        <div className="flex-1 flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs"
+          style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)" }}>
+          <Globe size={12} style={{ color: "var(--color-muted)", flexShrink: 0 }} />
+          <input value={url} onChange={(e) => setUrl(e.target.value)}
+            className="bg-transparent flex-1 outline-none font-mono text-xs"
+            style={{ color: "var(--color-text)" }} />
         </div>
-        <a href={url} target="_blank" rel="noreferrer" className="p-1.5 hover:bg-zinc-700 rounded-md text-zinc-400">
-          <ExternalLink size={14} />
+        <a href={url} target="_blank" rel="noreferrer" className="p-1 rounded" style={{ color: "var(--color-muted)" }}>
+          <ExternalLink size={13} />
         </a>
       </div>
       <div className="flex-1 bg-white">
-        <iframe key={iframeKey} src={url} className="w-full h-full border-none bg-white" title="Preview" sandbox="allow-same-origin allow-scripts allow-forms allow-popups" />
+        <iframe key={iframeKey} src={url} className="w-full h-full border-none"
+          title="Preview" sandbox="allow-same-origin allow-scripts allow-forms allow-popups" />
       </div>
     </div>
   );
 }
 
-function ToolsContent({ activeTab, conversationId, selectedFilePath, onFileSelect }: any) {
+function WorkspaceContent({ activeTab, conversationId, selectedFilePath, onFileSelect }: any) {
   return (
-    <div className="flex-1 overflow-hidden relative h-full bg-[#0e0e11]">
+    <div className="flex-1 overflow-hidden relative h-full" style={{ background: "var(--color-bg)" }}>
       <div className={cn("absolute inset-0", activeTab !== "terminal" && "hidden")}><Terminal conversationId={conversationId} /></div>
-      <div className={cn("absolute inset-0", activeTab !== "files" && "hidden")}><FileExplorer conversationId={conversationId} onFileSelect={onFileSelect} activePath={selectedFilePath} /></div>
-      <div className={cn("absolute inset-0", activeTab !== "editor" && "hidden")}><CodeEditor conversationId={conversationId} filePath={selectedFilePath} /></div>
-      <div className={cn("absolute inset-0", activeTab !== "browser" && "hidden")}><BrowserPreview /></div>
+      <div className={cn("absolute inset-0", activeTab !== "files"    && "hidden")}><FileExplorer conversationId={conversationId} onFileSelect={onFileSelect} activePath={selectedFilePath} /></div>
+      <div className={cn("absolute inset-0", activeTab !== "editor"   && "hidden")}><CodeEditor conversationId={conversationId} filePath={selectedFilePath} /></div>
+      <div className={cn("absolute inset-0", activeTab !== "browser"  && "hidden")}><BrowserPreview /></div>
     </div>
   );
 }
