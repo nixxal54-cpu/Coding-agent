@@ -1,4 +1,3 @@
---- START OF FILE Coding-agent-main/src/pages/ConversationPage.tsx ---
 import React from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
@@ -211,4 +210,3 @@ function ToolsContent({ activeTab, conversationId, selectedFilePath, onFileSelec
     </div>
   );
 }
---- END OF FILE Coding-agent-main/src/pages/ConversationPage.tsx ---

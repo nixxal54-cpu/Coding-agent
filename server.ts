@@ -1,4 +1,3 @@
---- START OF FILE Coding-agent-main/server.ts ---
 import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
@@ -382,4 +381,3 @@ if (process.env.NODE_ENV !== "production") {
 }
 
 httpServer.listen(PORT, "0.0.0.0", () => console.log(`\n🚀 APEX Agent → http://localhost:${PORT}\n`));
---- END OF FILE Coding-agent-main/server.ts ---

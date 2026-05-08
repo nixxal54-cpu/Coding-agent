@@ -1,4 +1,3 @@
---- START OF FILE Coding-agent-main/src/components/chat/ChatInterface.tsx ---
 import React from "react";
 import {
   Send, Square, Bot, User, ChevronDown, ChevronRight,
@@ -345,4 +344,3 @@ function ToolItem({ event }: { event: any }) {
     </motion.div>
   );
 }
---- END OF FILE Coding-agent-main/src/components/chat/ChatInterface.tsx ---
