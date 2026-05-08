@@ -325,6 +325,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("send_message", async ({ conversation_id, content, model }) => {
+    console.log(`[Server] send_message received. conv=${conversation_id} model=${model} content="${content?.slice(0,60)}"`);
     if (!conversationsDB[conversation_id]) {
       conversationsDB[conversation_id] = { id: conversation_id, title: content.slice(0, 60), created_at: new Date().toISOString(), updated_at: new Date().toISOString(), status: "running", message_count: 0, messages: [], model: model || "llama-3.3-70b-versatile", pinned: false, tags: [] };
     }
@@ -342,6 +343,7 @@ io.on("connection", (socket) => {
 
     try {
       const client = getGroqClient();
+      console.log(`[Server] Groq client ready. Starting agent loop for conv=${conversation_id} model=${selectedModel}`);
       activeAgentLoops.set(conversation_id, true);
       let loops = 0;
       while (loops++ < 12) {
@@ -383,6 +385,7 @@ io.on("connection", (socket) => {
       }
     } catch (e: any) {
       const msg = e.message || "Error";
+      console.error(`[Server] ❌ Agent error for conv=${conversation_id}:`, e);
       io.to(conversation_id).emit("agent_error", { message: msg });
       fullResponse += `\n\n⚠️ Error: ${msg}`;
     }
