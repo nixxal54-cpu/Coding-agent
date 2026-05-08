@@ -4,6 +4,7 @@ import {
   Terminal as TerminalIcon, FileCode, FolderOpen, Globe,
   Maximize2, Minimize2, Pencil, ArrowLeft, Cpu, MessageSquare, RotateCcw, ExternalLink
 } from "lucide-react";
+import toast from "react-hot-toast";
 import { useConversationStore } from "@/src/stores/conversation-store";
 import { useEventStore } from "@/src/stores/event-store";
 import { useAgentStore } from "@/src/stores/agent-store";
@@ -49,14 +50,60 @@ export default function ConversationPage() {
       sessionStorage.removeItem(`initial_msg_${id}`);
     }
     const socket = getSocket();
-    socket.on("agent_status", ({ status }) => setStatus(status));
-    socket.on("message_start", (msg) => addMessage({ ...msg, content: "", isStreaming: true }));
-    socket.on("message_token", ({ id: msgId, token }) => appendToken(msgId, token));
-    socket.on("message_done", ({ id: msgId }) => finalizeMessage(msgId));
-    socket.on("tool_use", (event) => addToolEvent({ type: "tool_use", ...event }));
-    socket.on("tool_result", (event) => addToolEvent({ type: "tool_result", ...event }));
+    const onAgentStatus = ({ status }: any) => {
+      console.log("[ConversationPage] agent_status:", status);
+      setStatus(status);
+    };
+    const onMessageStart = (msg: any) => {
+      console.log("[ConversationPage] message_start:", msg);
+      addMessage({ ...msg, content: "", isStreaming: true });
+    };
+    const onMessageToken = ({ id: msgId, token }: any) => appendToken(msgId, token);
+    const onMessageDone = ({ id: msgId }: any) => {
+      console.log("[ConversationPage] message_done:", msgId);
+      finalizeMessage(msgId);
+    };
+    const onToolUse = (event: any) => {
+      console.log("[ConversationPage] tool_use:", event);
+      addToolEvent({ type: "tool_use", ...event });
+    };
+    const onToolResult = (event: any) => {
+      console.log("[ConversationPage] tool_result:", event.tool, event.result?.slice?.(0, 80));
+      addToolEvent({ type: "tool_result", ...event });
+    };
+    const onError = ({ message }: any) => {
+      console.error("[ConversationPage] agent_error:", message);
+      toast.error("Agent error: " + message);
+      setStatus("idle");
+      addMessage({
+        id: `error-${Date.now()}`,
+        role: "assistant",
+        content: `⚠️ **Error:** ${message}`,
+        timestamp: new Date().toISOString(),
+      });
+    };
+    const onJoined = (data: any) => {
+      console.log("[ConversationPage] joined room:", data);
+      toast.success("Joined workspace room");
+    };
+
+    socket.on("joined", onJoined);
+    socket.on("agent_status", onAgentStatus);
+    socket.on("message_start", onMessageStart);
+    socket.on("message_token", onMessageToken);
+    socket.on("message_done", onMessageDone);
+    socket.on("tool_use", onToolUse);
+    socket.on("tool_result", onToolResult);
+    socket.on("agent_error", onError);
     return () => {
-      ["agent_status","message_start","message_token","message_done","tool_use","tool_result"].forEach((e) => socket.off(e));
+      socket.off("joined", onJoined);
+      socket.off("agent_status", onAgentStatus);
+      socket.off("message_start", onMessageStart);
+      socket.off("message_token", onMessageToken);
+      socket.off("message_done", onMessageDone);
+      socket.off("tool_use", onToolUse);
+      socket.off("tool_result", onToolResult);
+      socket.off("agent_error", onError);
     };
   }, [id]);
 
